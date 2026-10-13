@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="مالية دال">
+<meta name="theme-color" content="#ffffff">
+<title>مالية دال</title>
+<style>
+:root{--ink:#2a1a12;--muted:#7a6a60;--line:#e8e0da;--accent:#e2631a;--bg:#fff;--card:#f6f2ee}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Tahoma,sans-serif;padding:16px}
+.box{width:100%;max-width:360px;background:var(--card);border-radius:20px;padding:28px 22px}
+h1{margin:0 0 4px;font-size:1.5rem}
+p{margin:0 0 18px;color:var(--muted);font-size:.95rem}
+input[type=password]{width:100%;font:inherit;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff;color:inherit}
+label{display:flex;gap:.5rem;align-items:center;margin:12px 0 16px;color:var(--muted);font-size:.9rem}
+button{width:100%;font:inherit;font-weight:700;padding:12px;border:0;border-radius:12px;background:var(--accent);color:#fff;cursor:pointer}
+button:disabled{opacity:.6}
+.err{color:#b42318;font-size:.9rem;min-height:1.4em;margin-top:10px}
+</style>
+</head>
+<body>
+<form class="box" id="f" autocomplete="on">
+  <h1>مالية دال</h1>
+  <p>الملف مشفّر. أدخل كلمة المرور لفتحه.</p>
+  <input type="text" name="username" value="dal" autocomplete="username" hidden>
+  <input id="pw" type="password" autocomplete="current-password" placeholder="كلمة المرور" required>
+  <label><input id="rem" type="checkbox" checked> تذكّرني على هذا الجهاز</label>
+  <button id="go" type="submit">افتح</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+(function(){
+const ub=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+const bu=b=>btoa(String.fromCharCode(...new Uint8Array(b)));
+const S=crypto.subtle,KEY='dal-fin-key-v1';
+async function getJSON(u){const r=await fetch(u+'?t='+Date.now(),{cache:'no-store'});if(!r.ok)throw new Error(u);return r.json();}
+async function privFromPw(pw){const k=await getJSON('keyring.json');
+  const base=await S.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
+  const wk=await S.deriveKey({name:'PBKDF2',salt:ub(k.salt),iterations:k.iter,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['decrypt']);
+  return new Uint8Array(await S.decrypt({name:'AES-GCM',iv:ub(k.iv)},wk,ub(k.wrapped)));}
+async function open(pk8,file){const e=await getJSON(file);
+  const priv=await S.importKey('pkcs8',pk8,{name:'ECDH',namedCurve:'P-256'},false,['deriveBits']);
+  const pub=await S.importKey('raw',ub(e.epk),{name:'ECDH',namedCurve:'P-256'},false,[]);
+  const bits=await S.deriveBits({name:'ECDH',public:pub},priv,256);
+  const key=await S.importKey('raw',await S.digest('SHA-256',bits),'AES-GCM',false,['decrypt']);
+  const gz=await S.decrypt({name:'AES-GCM',iv:ub(e.iv)},key,ub(e.ct));
+  const ds=new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return await new Response(ds).text();}
+async function boot(pk8){
+  const [app,liveTxt]=await Promise.all([open(pk8,'app.enc'),open(pk8,'live.enc').catch(()=>null)]);
+  if(liveTxt){try{const L=JSON.parse(liveTxt);
+    if(L.daily)localStorage.setItem('dal-daily-v1',JSON.stringify(L.daily));
+    if(L.applicants)localStorage.setItem('dal-hire-v1',JSON.stringify(L.applicants));}catch(e){}}
+  document.open();document.write(app);document.close();}
+const f=document.getElementById('f'),err=document.getElementById('err'),go=document.getElementById('go');
+f.addEventListener('submit',async ev=>{ev.preventDefault();err.textContent='';go.disabled=true;go.textContent='جارٍ الفتح…';
+  try{const pk8=await privFromPw(document.getElementById('pw').value);
+    if(document.getElementById('rem').checked){try{localStorage.setItem(KEY,bu(pk8));}catch(e){}}
+    await boot(pk8);}
+  catch(e){err.textContent='كلمة المرور غير صحيحة، أو تعذّر التحميل.';go.disabled=false;go.textContent='افتح';}});
+let saved=null;try{saved=localStorage.getItem(KEY);}catch(e){}
+if(saved){f.style.display='none';boot(ub(saved)).catch(()=>{try{localStorage.removeItem(KEY);}catch(e){}f.style.display='';});}
+})();
+</script>
+</body>
+</html>
