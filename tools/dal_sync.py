@@ -7,8 +7,8 @@
 import sys, os, json, urllib.request
 API = 'https://script.google.com/macros/s/AKfycbwwIBl-P1g1zKXncj5xID5Ut7BliQ9p_9FIpZ0mnTLdI7txRw8vtexSpLKMpp-e6FSq/exec'
 KEY = os.environ['DAL_KEY']
-PUSH = ['daily', 'inbox', 'rt', 'foodics', 'applicants', 'customers']
-MERGE = ['inbox_state', 'rt_state', 'hire_edits', 'slow', 'cu_state']
+PUSH = ['daily', 'inbox', 'rt', 'foodics', 'applicants', 'customers', 'suppliers']
+MERGE = ['inbox_state', 'rt_state', 'hire_edits', 'slow', 'cu_state', 'sup_state', 'records']
 
 def call(o):
     o['k'] = KEY
