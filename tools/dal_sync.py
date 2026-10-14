@@ -7,8 +7,8 @@
 import sys, os, json, urllib.request
 API = 'https://script.google.com/macros/s/AKfycbwwIBl-P1g1zKXncj5xID5Ut7BliQ9p_9FIpZ0mnTLdI7txRw8vtexSpLKMpp-e6FSq/exec'
 KEY = os.environ['DAL_KEY']
-PUSH = ['daily', 'inbox', 'rt', 'foodics', 'applicants']
-MERGE = ['inbox_state', 'rt_state', 'hire_edits', 'slow']
+PUSH = ['daily', 'inbox', 'rt', 'foodics', 'applicants', 'customers']
+MERGE = ['inbox_state', 'rt_state', 'hire_edits', 'slow', 'cu_state']
 
 def call(o):
     o['k'] = KEY
@@ -48,7 +48,7 @@ def merge(name, art, gas):
             for r in (art.get('add') or []) + (gas.get('add') or []): ids[r.get('id')] = r
             m['add'] = list(ids.values())
         return m
-    return gas if ts(gas) > ts(art) else art   # hire_edits
+    return gas if ts(gas) > ts(art) else art   # hire_edits, cu_state
 
 def main():
     src, out = sys.argv[1], sys.argv[2]
