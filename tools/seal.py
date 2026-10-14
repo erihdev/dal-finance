@@ -1,7 +1,7 @@
 """تشفير ملف مالية دال للنشر على GitHub Pages.
 - keygen: ينشئ زوج مفاتيح ECDH P-256، ويحفظ المفتاح العام في pub.json، ويغلّف المفتاح الخاص بكلمة المرور في keyring.json.
 - app <artifact_dir>: يدمج index.html وكل ملفات js في صفحة واحدة ويشفّرها إلى app.enc.
-- live <daily.json> <applicants.json> [hire_edits.json]: يدمج التعديلات ويشفّر بيانات المتابعة والمتقدمين إلى live.enc.
+- live <daily.json> <applicants.json> [hire_edits.json] [key=file.json ...]: يدمج التعديلات ويشفّر بيانات المتابعة والمتقدمين، ومعها أي مستند آخر يُكتب في ذاكرة الجهاز بالمفتاح المعطى، إلى live.enc.
 التشفير بالمفتاح العام فقط، فلا تحتاج المهمة المجدولة كلمة المرور."""
 import sys, os, json, gzip, base64, re
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -38,9 +38,16 @@ elif cmd == 'app':
 elif cmd == 'live':
     app = json.load(open(sys.argv[3], encoding='utf-8'))
     # تعديلات وحذف المتقدمين من الملف (live/hire_edits) إن وُجدت
-    if len(sys.argv) > 4 and os.path.exists(sys.argv[4]):
+    if len(sys.argv) > 4 and '=' not in sys.argv[4] and os.path.exists(sys.argv[4]):
         ed = json.load(open(sys.argv[4], encoding='utf-8'))
         dl, ee = ed.get('del') or {}, ed.get('e') or {}
         app['items'] = [dict(r, **ee.get(r.get('id'), {})) for r in app.get('items', []) if r.get('id') not in dl]
     doc = {'daily': json.load(open(sys.argv[2], encoding='utf-8')), 'applicants': app}
+    # مفاتيح إضافية تُكتب كما هي في ذاكرة الجهاز: key=path (مثل dal-slow-v1=slow.json)
+    ls = {}
+    for a in sys.argv[4:]:
+        if '=' in a:
+            k, f = a.split('=', 1)
+            if os.path.exists(f): ls[k] = json.load(open(f, encoding='utf-8'))
+    if ls: doc['ls'] = ls
     seal(json.dumps(doc, ensure_ascii=False).encode('utf-8'), 'live.enc')

@@ -54,7 +54,8 @@ async function boot(pk8){
   const [app,liveTxt]=await Promise.all([open(pk8,'app.enc'),open(pk8,'live.enc').catch(()=>null)]);
   if(liveTxt){try{const L=JSON.parse(liveTxt);
     if(L.daily)localStorage.setItem('dal-daily-v1',JSON.stringify(L.daily));
-    if(L.applicants)localStorage.setItem('dal-hire-v1',JSON.stringify(L.applicants));}catch(e){}}
+    if(L.applicants)localStorage.setItem('dal-hire-v1',JSON.stringify(L.applicants));
+    if(L.ls)Object.keys(L.ls).forEach(k=>{try{localStorage.setItem(k,JSON.stringify(L.ls[k]));}catch(e){}});}catch(e){}}
   document.open();document.write(app);document.close();}
 const f=document.getElementById('f'),err=document.getElementById('err'),go=document.getElementById('go');
 f.addEventListener('submit',async ev=>{ev.preventDefault();err.textContent='';go.disabled=true;go.textContent='جارٍ الفتح…';
