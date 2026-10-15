@@ -8,6 +8,7 @@ import sys, os, json, urllib.request
 API = 'https://script.google.com/macros/s/AKfycbwwIBl-P1g1zKXncj5xID5Ut7BliQ9p_9FIpZ0mnTLdI7txRw8vtexSpLKMpp-e6FSq/exec'
 KEY = os.environ['DAL_KEY']
 PUSH = ['daily', 'inbox', 'rt', 'foodics', 'applicants', 'customers', 'suppliers', 'sup_hist', 'customers_old', 'customers_old2', 'stock']
+PULL = ['wa_live']   # يكتبه ناقل واتساب في السحابة مباشرة في قاعدة الجوال، ويُنسخ إلى الملف التفاعلي
 MERGE = ['inbox_state', 'rt_state', 'hire_edits', 'slow', 'cu_state', 'sup_state', 'records', 'stock_state', 'quotes']
 
 def call(o):
@@ -53,7 +54,7 @@ def merge(name, art, gas):
 def main():
     src, out = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
-    paths = ['live/' + n for n in PUSH + MERGE]
+    paths = ['live/' + n for n in PUSH + MERGE + PULL]
     remote = call({'op': 'get', 'paths': paths})['docs']
     changed_art = []
     for n in PUSH:
@@ -67,6 +68,11 @@ def main():
         if m != g: call({'op': 'set', 'path': 'live/' + n, 'data': m}); print('حُدّث في الجوال:', n)
         if m != a:
             json.dump(m, open(os.path.join(out, n + '.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+            changed_art.append(n)
+    for n in PULL:
+        a, g = load(src, n), (remote.get('live/' + n) or {}).get('data')
+        if g is not None and g != a:
+            json.dump(g, open(os.path.join(out, n + '.json'), 'w', encoding='utf-8'), ensure_ascii=False)
             changed_art.append(n)
     print('يُكتب في الملف التفاعلي:', ' '.join(changed_art) or 'لا شيء')
 
