@@ -10,6 +10,7 @@ const KEEP_MS = (+E.KEEP_HOURS || 48) * 3600e3, MAX = +E.MAX_MSGS || 600;
 const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجموعات
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
+const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
 const names = new Map();
 
@@ -63,6 +64,7 @@ async function onMsg(p) {
     from: me ? 'أنت' : (isGroup ? (pushName || digits(await pnOf(String(p.participant || p.author || '')))) : chat), me, x: text.slice(0, 700),
     q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined });
   schedule();
+  try { drafter.onMessage(buf[buf.length - 1]); } catch (e) { lastErr = 'drafter ' + e.message; }
 }
 function schedule() {
   dirty = true; if (!firstAt) firstAt = Date.now();
@@ -80,7 +82,7 @@ async function seed() {
   try { const r = await gas({ op: 'get', paths: ['live/wa_live'] }); const d = r.docs['live/wa_live']; if (d && d.data && Array.isArray(d.data.msgs)) buf = d.data.msgs; } catch (e) { lastErr = 'seed ' + e.message; }
 }
 const srv = http.createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr })); }
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status() })); }
   if (req.method !== 'POST' || !req.url.startsWith('/hook')) { res.writeHead(404); return res.end(); }
   if (SECRET && req.headers['x-relay-secret'] !== SECRET) { res.writeHead(401); return res.end(); }
   let b = ''; req.on('data', c => { b += c; if (b.length > 2e6) req.destroy(); });
