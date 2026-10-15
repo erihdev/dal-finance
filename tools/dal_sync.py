@@ -77,4 +77,8 @@ def main():
     print('يُكتب في الملف التفاعلي:', ' '.join(changed_art) or 'لا شيء')
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == '--get':   # dal_sync.py --get wa_live <ملف>
+        d = call({'op': 'get', 'paths': ['live/' + sys.argv[2]]})['docs'].get('live/' + sys.argv[2], {}).get('data')
+        json.dump(d, open(sys.argv[3], 'w', encoding='utf-8'), ensure_ascii=False); print('حُفظ', sys.argv[2])
+    else:
+        main()
