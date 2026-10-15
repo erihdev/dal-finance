@@ -14,7 +14,7 @@ const SITES = [
   { k: 'bonat', name: 'بونات', url: 'https://store.bonat.io/', login: /login|signin/i },
   { k: 'olu', name: 'علو', url: 'https://hr.olu.sa/', login: /login|signin/i, noText: true },
 ];
-let ctx = null, state = { at: null, sites: {} }, busy = false;
+let ctx = null, state = { at: null, sites: {} }, busy = false, viewers = 0, lastView = 0;
 
 const START = `<!doctype html><meta charset=utf-8><title>متصفح دال</title><body style="font-family:sans-serif;direction:rtl;padding:24px;background:#FFF7F0">
 <h2>متصفح دال في السحابة</h2><p>سجّل دخولك بنفسك في كل منصة مرة واحدة. الجلسة تبقى محفوظة، والقارئ يقرأ اللوحات كل ${E.POLL_MIN || 5} دقائق (قراءة فقط).</p>
@@ -38,8 +38,10 @@ async function readSite(s) {
   } catch (e) { return { at: new Date().toISOString(), ok: false, err: String(e.message || e).slice(0, 200) }; }
   finally { await p.close().catch(() => {}); }
 }
-async function poll() {
-  if (busy || !ctx) return; busy = true;
+async function poll(force) {
+  if (busy || !ctx) return;
+  if (!force && (viewers > 0 || Date.now() - lastView < 3 * 60e3)) return;   // لا نفتح تبويبات أثناء استخدامك للشاشة
+  busy = true;
   try {
     for (const s of SITES) state.sites[s.k] = Object.assign({ name: s.name }, await readSite(s));
     state.at = new Date().toISOString();
@@ -50,7 +52,8 @@ async function poll() {
 async function launch() {
   ctx = await chromium.launchPersistentContext('/data/profile', {
     headless: false, viewport: null, locale: 'ar-SA', timezoneId: 'Asia/Riyadh',
-    args: ['--no-sandbox', '--start-maximized', '--disable-dev-shm-usage', '--lang=ar'],
+    args: ['--no-sandbox', '--start-maximized', '--disable-dev-shm-usage', '--lang=ar', '--disable-gpu', '--disable-smooth-scrolling', '--wm-window-animations-disabled'],
+    ignoreDefaultArgs: ['--enable-automation'],
   });
   ctx.on('close', () => { ctx = null; setTimeout(launch, 3000); });
   const p = ctx.pages()[0] || await ctx.newPage();
@@ -71,10 +74,10 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, needLogin: state.needLogin || [] })); }
   if (!authed(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dal"' }); return res.end('auth'); }
   res.setHeader('Set-Cookie', 'dalv=' + TOK + '; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000');
-  if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=remote&reconnect=1&path=websockify' }); return res.end(); }
-  if (req.url === '/poll') { poll(); res.writeHead(200); return res.end('ok'); }
+  if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
+  if (req.url === '/poll') { poll(true); res.writeHead(200); return res.end('ok'); }
   proxy.web(req, res);
 });
-srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); proxy.ws(req, sock, head); });
+srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
 launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); }).catch(e => { console.error(e); process.exit(1); });
