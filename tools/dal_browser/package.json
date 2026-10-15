@@ -1,0 +1,1 @@
+{"name":"dal-browser","version":"1.0.0","private":true,"dependencies":{"playwright":"1.48.2","http-proxy":"1.18.1"}}
