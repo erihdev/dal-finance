@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>محاكي دال</title>
+<link rel="icon" href="icon-180.png">
+<style>
+:root{--bg:#1b1b1f;--bezel:#0b0b0d;--w:428px;--h:926px}
+html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;color:#ddd;overflow:hidden}
+#bar{position:fixed;top:0;inset-inline:0;height:44px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#121214;border-bottom:1px solid #2a2a2e;z-index:5;-webkit-app-region:drag}
+#bar b{font-size:.9rem}#bar small{color:#9a9aa0;font-size:.74rem;direction:ltr}
+#bar button{-webkit-app-region:no-drag;border:1px solid #3a3a40;background:#1e1e22;color:#eee;border-radius:9px;padding:.35rem .7rem;font-size:.8rem;cursor:pointer;font-family:inherit}
+#bar button:hover{background:#2a2a30}
+#bar .upd{background:#E35F14;border-color:transparent;display:none}
+#stage{position:fixed;top:44px;bottom:0;inset-inline:0;display:flex;align-items:center;justify-content:center}
+#phone{position:relative;width:var(--w);height:var(--h);transform-origin:center center;border-radius:62px;background:var(--bezel);padding:14px;box-shadow:0 0 0 2px #2b2b30,0 30px 80px rgba(0,0,0,.6),inset 0 0 0 1px #3c3c42;box-sizing:content-box}
+#screen{width:var(--w);height:var(--h);border-radius:48px;overflow:hidden;background:#FFF7F0;position:relative}
+#notch{position:absolute;top:0;left:50%;transform:translateX(-50%);width:210px;height:32px;background:var(--bezel);border-radius:0 0 22px 22px;z-index:3}
+#time{position:absolute;top:12px;right:34px;font-weight:700;font-size:15px;color:#111;z-index:4;font-family:-apple-system,system-ui}
+#stat{position:absolute;top:13px;left:36px;font-size:12px;color:#111;z-index:4;letter-spacing:1px;direction:ltr}
+iframe{border:0;width:100%;height:100%;display:block;background:#FFF7F0}
+#home{position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:140px;height:5px;border-radius:3px;background:#111;z-index:4;opacity:.6}
+.btn{position:absolute;background:#2a2a30;border-radius:3px}
+.btn.l1{left:-3px;top:150px;width:3px;height:34px}.btn.l2{left:-3px;top:215px;width:3px;height:64px}.btn.l3{left:-3px;top:295px;width:3px;height:64px}.btn.r{right:-3px;top:230px;width:3px;height:100px}
+#hint{position:fixed;bottom:8px;inset-inline:0;text-align:center;font-size:.72rem;color:#77777d}
+</style>
+</head>
+<body>
+<div id="bar"><b>📱 محاكي دال — iPhone 12 Pro Max</b><small id="ver"></small><span style="flex:1"></span>
+  <button class="upd" id="upd">⬆ تحديث جديد — تحميل</button>
+  <button id="reload" title="إعادة تحميل">↻ تحديث</button>
+  <button id="homeb">⌂ الرئيسية</button>
+  <button id="pop">⧉ نافذة مستقلة</button>
+</div>
+<div id="stage"><div id="phone"><span class="btn l1"></span><span class="btn l2"></span><span class="btn l3"></span><span class="btn r"></span>
+  <div id="screen"><div id="notch"></div><div id="time">9:41</div><div id="stat">●●●● ▲ ▮</div><iframe id="app" src="./?sim=1" allow="clipboard-read; clipboard-write"></iframe><div id="home"></div></div></div></div>
+<div id="hint">اسحب النافذة من الشريط العلوي · المحاكي يعيد التحميل تلقائيًا عند صدور نسخة جديدة</div>
+<script>
+const fr=document.getElementById('app');
+function fit(){const sw=innerWidth-24,sh=innerHeight-44-24;const s=Math.min(1,sw/(428+28),sh/(926+28));document.getElementById('phone').style.transform='scale('+s+')';}
+addEventListener('resize',fit);fit();
+function clock(){const d=new Date();document.getElementById('time').textContent=d.getHours()%12||12;document.getElementById('time').textContent+=':'+String(d.getMinutes()).padStart(2,'0');}clock();setInterval(clock,15000);
+let cur='';
+function readVer(){try{const v=fr.contentWindow.APP_BUILD||'';if(v){cur=v;document.getElementById('ver').textContent='v'+v;}}catch(e){}}
+fr.addEventListener('load',()=>{setTimeout(readVer,800);setTimeout(readVer,3000);});
+document.getElementById('reload').onclick=()=>{fr.src='./?sim=1&t='+Date.now();document.getElementById('upd').style.display='none';};
+document.getElementById('homeb').onclick=()=>{try{fr.contentWindow.location.hash='#home';}catch(e){}};
+document.getElementById('pop').onclick=()=>{window.open(location.pathname+'?pop=1','dalsim','width=486,height=1010,menubar=no,toolbar=no,location=no,status=no');};
+document.getElementById('upd').onclick=()=>document.getElementById('reload').onclick();
+// فحص نسخة جديدة كل دقيقة: build.json يُحدَّث مع كل نشر
+async function check(){try{const r=await fetch('build.json?t='+Date.now(),{cache:'no-store'});const b=await r.json();const v=String(b.d||'').replace(/-/g,'.').slice(2)+'.'+b.n;if(cur&&v!==cur){document.getElementById('upd').style.display='';document.getElementById('upd').textContent='⬆ نسخة جديدة v'+v+' — تحميل';if(new URLSearchParams(location.search).get('auto')!=='0'){setTimeout(()=>document.getElementById('reload').onclick(),1500);}}}catch(e){}}
+setInterval(check,60000);setTimeout(check,8000);
+</script>
+</body>
+</html>
