@@ -71,19 +71,21 @@ async function readBonat(p, from, to) {   // قراءة مؤشرات بونات 
 // قراءة سلة من داخل صفحة مُصادَقة (تستخدم مفتاح اللوحة الحيّ المتجدّد، لا مفتاحًا منقولًا ينتهي)
 async function sallaInPage(from, to, diag) {
   const p = await ctx.newPage();
-  let liveAuth = '';   // نلتقط مفتاح الواجهة الحيّ من طلبات اللوحة نفسها
-  p.on('request', r => { try { if (!liveAuth && /api\.salla\.dev\/admin/.test(r.url())) { const a = r.headers()['authorization']; if (a && /^bearer /i.test(a)) liveAuth = a; } } catch (e) {} });
+  let liveHeaders = null, spaStatus = 0;   // نلتقط ترويسات اللوحة الكاملة وحالة طلبها الحقيقي
+  p.on('request', r => { try { if (/api\.salla\.dev\/admin/.test(r.url())) { const h = r.headers(); if (h.authorization && /^bearer /i.test(h.authorization) && !liveHeaders) liveHeaders = h; } } catch (e) {} });
+  p.on('response', r => { try { if (/api\.salla\.dev\/admin\/v2\/orders/.test(r.url()) && !spaStatus) spaStatus = r.status(); } catch (e) {} });
   try {
-    await p.goto('https://s.salla.sa/', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    for (let i = 0; i < 20 && !liveAuth; i++) await p.waitForTimeout(700);   // ننتظر حتى تُصدر اللوحة طلبًا يحمل المفتاح
-    await p.waitForTimeout(1500);
+    await p.goto('https://s.salla.sa/orders', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    for (let i = 0; i < 24 && !liveHeaders; i++) await p.waitForTimeout(700);   // ننتظر حتى تُصدر اللوحة طلبًا يحمل الترويسات
+    await p.waitForTimeout(2000);
+    // ترويسات نظيفة قابلة لإعادة الاستخدام (نحذف ما يمنعه المتصفح)
+    const reuse = {}; for (const [k, v] of Object.entries(liveHeaders || {})) { if (!/^(host|content-length|connection|accept-encoding|cookie|:.*)/i.test(k)) reuse[k] = v; }
+    reuse.Accept = 'application/json';
     return await p.evaluate(async (arg) => {
-      const [from, to, diag, liveAuth] = arg;
-      let tok = (liveAuth || '').replace(/^bearer /i, '');
-      if (!tok) { try { for (const k of Object.keys(localStorage)) { const v = localStorage.getItem(k) || ''; const m = v.match(/ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/); if (m) { tok = m[0]; break; } } } catch (e) {} }
-      const H = { Accept: 'application/json' }; if (tok) H.Authorization = 'Bearer ' + tok;
+      const [from, to, diag, reuse, spaStatus] = arg;
+      const H = Object.assign({}, reuse);
       const get = async path => { try { const r = await fetch('https://api.salla.dev' + path, { headers: H }); return { s: r.status, j: r.status === 200 ? await r.json() : null }; } catch (e) { return { s: -1, err: String(e.message || e).slice(0, 80) }; } };
-      if (diag) { const r = await get('/admin/v2/orders?per_page=1&page=1'); const o = (r.j && r.j.data || [])[0] || {}; const keys = {}; for (const k of Object.keys(o)) keys[k] = (o[k] && typeof o[k] === 'object') ? (Array.isArray(o[k]) ? 'arr' : Object.keys(o[k]).slice(0, 10)) : typeof o[k]; return { status: r.s, err: r.err, url: location.href, lsN: Object.keys(localStorage).length, hasTok: !!tok, pagination: r.j && r.j.pagination, keys, amounts: o.amounts && typeof o.amounts === 'object' ? Object.keys(o.amounts) : null }; }
+      if (diag) { const r = await get('/admin/v2/orders?per_page=1&page=1'); const o = (r.j && r.j.data || [])[0] || {}; const keys = {}; for (const k of Object.keys(o)) keys[k] = (o[k] && typeof o[k] === 'object') ? (Array.isArray(o[k]) ? 'arr' : Object.keys(o[k]).slice(0, 10)) : typeof o[k]; return { myStatus: r.s, spaStatus, err: r.err, url: location.href, title: document.title.slice(0, 60), txt: (document.body ? document.body.innerText : '').slice(0, 220).replace(/\n+/g, ' | '), hdrKeys: Object.keys(reuse), pagination: r.j && r.j.pagination, keys, amounts: o.amounts && typeof o.amounts === 'object' ? Object.keys(o.amounts) : null }; }
       const num = x => typeof x === 'number' ? x : (x && typeof x === 'object' && typeof x.amount === 'number' ? x.amount : (parseFloat(x) || 0));
       const agg = { orders: 0, sales: 0, byStatus: {}, byPayment: {}, refunds: 0, refundAmount: 0, currency: 'SAR', from, to, status: 0 };
       let page = 1, pages = 1;
@@ -103,7 +105,7 @@ async function sallaInPage(from, to, diag) {
       } while (page <= pages && page <= 60);
       agg.sales = Math.round(agg.sales * 100) / 100; agg.refundAmount = Math.round(agg.refundAmount * 100) / 100;
       return agg;
-    }, [from, to, !!diag, liveAuth]);
+    }, [from, to, !!diag, reuse, spaStatus]);
   } finally { await p.close().catch(() => {}); }
 }
 async function readSalla(from, to) {
@@ -234,12 +236,6 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
   if (req.method === 'POST' && req.url === '/import') return importSessions(req, res);
   if (req.url === '/poll') { poll(true); res.writeHead(200); return res.end('ok'); }
-  if (req.url === '/salladiag') {   // تشخيص مؤقت: بنية رد سلة (مفاتيح فقط، بلا بيانات عملاء)
-    return (async () => {
-      try { const d = await sallaInPage(null, null, true); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(d, null, 1)); }
-      catch (e) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ err: String(e.message || e) })); }
-    })();
-  }
   if (req.url.startsWith('/report')) {   // تجهيز تقرير «حساب» عن فترة: سلة + بونات (الكاشير لاحقًا)
     return (async () => {
       try {
