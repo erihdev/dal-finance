@@ -303,11 +303,14 @@ async function buildReport(from, to, label, reqTs) {
   return rep;
 }
 let lastReqTs = 0, reportBusy = false;
-async function checkReportReq() {   // التطبيق يكتب live/report_req فنولّد التقرير خلال ثوانٍ
+async function checkReportReq() {   // التطبيق يكتب live/report_req أو live/cust_req؛ فحص واحد كل دقيقة لكليهما (حصّة Apps Script اليومية محدودة)
   if (reportBusy || !ctx || !GAS || !KEY) return; reportBusy = true;
   try {
-    const r = await gas({ op: 'get', paths: ['live/report_req'] }); const d = r.docs && r.docs['live/report_req'];
-    const q = d && d.data; if (q && q.ts && q.ts !== lastReqTs && q.from && q.to) { lastReqTs = q.ts; await buildReport(q.from, q.to, q.label || '', q.ts); }
+    const r = await gas({ op: 'get', paths: ['live/report_req', 'live/cust_req'] });
+    const d = r.docs && r.docs['live/report_req']; const q = d && d.data;
+    if (q && q.ts && q.ts !== lastReqTs && q.from && q.to) { lastReqTs = q.ts; await buildReport(q.from, q.to, q.label || '', q.ts); }
+    const c = r.docs && r.docs['live/cust_req']; const cq = c && c.data;
+    if (cq && cq.ts && cq.ts !== lastCustReq && !custBusy) { lastCustReq = cq.ts; await syncCustomers(); }
   } catch (e) { } finally { reportBusy = false; }
 }
 
@@ -437,4 +440,4 @@ const srv = http.createServer((req, res) => {
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setInterval(checkReportReq, 20e3); setInterval(checkCustReq, 30e3); dailyAt(4, syncCustomers); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); }).catch(e => { console.error(e); process.exit(1); });

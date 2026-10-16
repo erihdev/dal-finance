@@ -113,7 +113,7 @@ async function syncWaCustomers() {
   finally { waBusy = false; }
 }
 async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['live/cust_req'] }); const d = r.docs && r.docs['live/cust_req']; const q = d && d.data; if (q && q.ts && q.ts !== lastCustReq) { lastCustReq = q.ts; await syncWaCustomers(); } } catch (e) { } }
-setInterval(checkCustReq, 30000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
+setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status() })); }
