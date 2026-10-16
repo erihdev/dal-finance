@@ -31,15 +31,24 @@ iframe{border:0;width:100%;height:100%;display:block;background:#FFF7F0}
   <button class="upd" id="upd">⬆ تحديث جديد — تحميل</button>
   <button id="reload" title="إعادة تحميل">↻ تحديث</button>
   <button id="homeb">⌂ الرئيسية</button>
-  <button id="pop">⧉ نافذة مستقلة</button>
+  <button id="pip" style="background:#E35F14;border-color:transparent">📌 دائمًا فوق (يمين الشاشة)</button><button id="pop">⧉ نافذة مستقلة</button>
 </div>
 <div id="stage"><div id="phone"><span class="btn l1"></span><span class="btn l2"></span><span class="btn l3"></span><span class="btn r"></span>
   <div id="screen"><div id="notch"></div><div id="time">9:41</div><div id="stat">●●●● ▲ ▮</div><iframe id="app" src="./?sim=1" allow="clipboard-read; clipboard-write"></iframe><div id="home"></div></div></div></div>
 <div id="hint">اسحب النافذة من الشريط العلوي · المحاكي يعيد التحميل تلقائيًا عند صدور نسخة جديدة</div>
 <script>
 const fr=document.getElementById('app');
-function fit(){const sw=innerWidth-24,sh=innerHeight-44-24;const s=Math.min(1,sw/(428+28),sh/(926+28));document.getElementById('phone').style.transform='scale('+s+')';}
+function fit(){const st=document.getElementById('stage');const w=st.ownerDocument.defaultView;const top=st.ownerDocument===document?44:0;const sw=w.innerWidth-24,sh=w.innerHeight-top-24;const s=Math.min(1,sw/(428+28),sh/(926+28));document.getElementById('phone').style.transform='scale('+s+')';}
 addEventListener('resize',fit);fit();
+// نافذة «دائمًا فوق»: Document Picture-in-Picture في كروم — تبقى فوق كل البرامج (بما فيها Claude) ويمكن سحبها وتغيير حجمها
+document.getElementById('pip').onclick=async()=>{if(!('documentPictureInPicture' in window)){alert('هذه الميزة تحتاج متصفح كروم حديث (116+)');return;}
+  try{const pw=await documentPictureInPicture.requestWindow({width:470,height:Math.min(screen.availHeight-40,1000)});
+    const css=[...document.styleSheets].map(ss=>{try{return [...ss.cssRules].map(r=>r.cssText).join('\n');}catch(e){return '';}}).join('\n');
+    const st=pw.document.createElement('style');st.textContent=css+' #stage{top:0} body{background:#1b1b1f}';pw.document.head.appendChild(st);pw.document.documentElement.dir='rtl';
+    const stage=document.getElementById('stage');pw.document.body.appendChild(stage);pw.addEventListener('resize',fit);setTimeout(fit,50);
+    document.getElementById('hint').textContent='المحاكي الآن في نافذة عائمة فوق كل البرامج — اسحبها إلى يمين الشاشة. إغلاقها يعيده هنا.';
+    pw.addEventListener('pagehide',()=>{document.body.appendChild(stage);fit();document.getElementById('hint').textContent='اسحب النافذة من الشريط العلوي · المحاكي يعيد التحميل تلقائيًا عند صدور نسخة جديدة';});
+  }catch(e){alert('تعذّر فتح النافذة العائمة: '+e.message);}};
 function clock(){const d=new Date();document.getElementById('time').textContent=d.getHours()%12||12;document.getElementById('time').textContent+=':'+String(d.getMinutes()).padStart(2,'0');}clock();setInterval(clock,15000);
 let cur='';
 function readVer(){try{const v=fr.contentWindow.APP_BUILD||'';if(v){cur=v;document.getElementById('ver').textContent='v'+v;}}catch(e){}}
