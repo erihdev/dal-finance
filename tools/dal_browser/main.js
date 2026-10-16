@@ -103,7 +103,9 @@ const authed = req => {
 };
 const srv = http.createServer((req, res) => {
   if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, needLogin: state.needLogin || [] })); }
-  if (!authed(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dal"' }); return res.end('auth'); }
+  if (!authed(req)) {
+    if (req.url === '/import') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, err: 'الرمز غير صحيح' })); }   // بلا نافذة دخول حتى لا تعلق الإضافة
+    res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dal"' }); return res.end('auth'); }
   res.setHeader('Set-Cookie', 'dalv=' + TOK + '; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000');
   if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
   if (req.method === 'POST' && req.url === '/import') return importSessions(req, res);
