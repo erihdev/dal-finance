@@ -2,7 +2,7 @@ const SERVER = 'https://browser-production-10fb.up.railway.app';
 const SITES = [
   { k: 'foodics', name: 'فودكس', domains: ['foodics.com'], origins: ['https://console.foodics.com', 'https://accounting.foodics.com'] },
   { k: 'retm', name: 'رتم', domains: ['retm.sa'], origins: ['https://retm.sa'] },
-  { k: 'bonat', name: 'بونات', domains: ['bonat.io'], origins: ['https://store.bonat.io'] },
+  { k: 'bonat', name: 'بونات', domains: ['bonat.io'], origins: ['https://store.bonat.io', 'https://dashboard-api.bonat.io'] },
   { k: 'olu', name: 'علو', domains: ['olu.sa'], origins: ['https://hr.olu.sa'] },
 ];
 const $ = id => document.getElementById(id);
@@ -26,8 +26,10 @@ $('go').onclick = async () => {
   $('out').textContent = 'جارٍ النقل…';
   const payload = { sites: {} }; const lines = [];
   for (const s of SITES) {
-    let cookies = [];
-    for (const d of s.domains) cookies = cookies.concat(await chrome.cookies.getAll({ domain: d }));
+    let cookies = [], seen = new Set();   // نجمع الكوكيز بالنطاق وبعنوان كل خدمة (ليشمل كوكيز dashboard-api المخفية)
+    const add = arr => { for (const c of arr || []) { const id = c.name + '@' + c.domain + c.path; if (!seen.has(id)) { seen.add(id); cookies.push(c); } } };
+    for (const d of s.domains) { try { add(await chrome.cookies.getAll({ domain: d })); } catch (e) {} }
+    for (const o of s.origins) { try { add(await chrome.cookies.getAll({ url: o + '/' })); } catch (e) {} }
     const storage = {};
     for (const o of s.origins) { try { const st = await storageOf(o); if (st) storage[o] = st; } catch (e) {} }
     payload.sites[s.k] = { cookies, storage };
