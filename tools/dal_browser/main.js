@@ -60,6 +60,37 @@ async function launch() {
   await p.setContent(START);
   console.log('browser up');
 }
+// استيراد جلسات الدخول من إضافة كروم (كوكيز + تخزين المتصفح) — لا كلمات مرور
+const SS = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Lax' };
+function importSessions(req, res) {
+  let b = ''; req.on('data', c => { b += c; if (b.length > 5e6) req.destroy(); });
+  req.on('end', async () => {
+    const out = {};
+    try {
+      if (!ctx) throw new Error('المتصفح يعيد التشغيل، جرّب بعد دقيقة');
+      const j = JSON.parse(b || '{}');
+      for (const [k, site] of Object.entries(j.sites || {})) {
+        const cookies = (site.cookies || []).filter(c => c.name && c.domain).map(c => ({
+          name: c.name, value: c.value || '', domain: c.domain, path: c.path || '/', httpOnly: !!c.httpOnly, secure: !!c.secure,
+          sameSite: SS[c.sameSite] || 'Lax', expires: c.session || !c.expirationDate ? -1 : Math.floor(c.expirationDate) }))
+          .map(c => (c.sameSite === 'None' && !c.secure ? Object.assign(c, { sameSite: 'Lax' }) : c));
+        if (cookies.length) await ctx.addCookies(cookies);
+        let st = 0;
+        for (const [origin, data] of Object.entries(site.storage || {})) {
+          const p = await ctx.newPage();
+          try {
+            await p.goto(origin, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await p.evaluate(d => { for (const [a, v] of Object.entries(d.local || {})) localStorage.setItem(a, v); for (const [a, v] of Object.entries(d.session || {})) sessionStorage.setItem(a, v); }, data);
+            st++;
+          } catch (e) { } finally { await p.close().catch(() => {}); }
+        }
+        out[k] = { cookies: cookies.length, storage: st };
+      }
+      lastView = 0; setTimeout(() => poll(true), 3000);
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, out }));
+    } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); }
+  });
+}
 // العرض عن بُعد خلف كلمة مرور
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:6080', ws: true });
 proxy.on('error', () => {});
@@ -75,6 +106,7 @@ const srv = http.createServer((req, res) => {
   if (!authed(req)) { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dal"' }); return res.end('auth'); }
   res.setHeader('Set-Cookie', 'dalv=' + TOK + '; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000');
   if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
+  if (req.method === 'POST' && req.url === '/import') return importSessions(req, res);
   if (req.url === '/poll') { poll(true); res.writeHead(200); return res.end('ok'); }
   proxy.web(req, res);
 });
