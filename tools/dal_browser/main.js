@@ -219,6 +219,22 @@ function importSessions(req, res) {
     } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); }
   });
 }
+// ===== مُجهّز تقرير «حساب»: سلة + بونات لفترة، ويكتبه في live/hesab_report =====
+async function buildReport(from, to, label, reqTs) {
+  const rep = { at: new Date().toISOString(), from, to, label: label || '', reqTs: reqTs || 0, sources: {} };
+  rep.sources.salla = await readSalla(from, to);
+  let p; try { p = await ctx.newPage(); await p.goto('https://store.bonat.io/', { waitUntil: 'domcontentloaded', timeout: 30000 }); rep.sources.bonat = await readBonat(p, from, to); } catch (e) { rep.sources.bonat = { ok: false, err: String(e.message || e).slice(0, 120) }; } finally { if (p) await p.close().catch(() => {}); }
+  if (GAS && KEY) await gas({ op: 'set', path: 'live/hesab_report', data: rep }).catch(e => console.log('gas', e.message));
+  return rep;
+}
+let lastReqTs = 0, reportBusy = false;
+async function checkReportReq() {   // التطبيق يكتب live/report_req فنولّد التقرير خلال ثوانٍ
+  if (reportBusy || !ctx || !GAS || !KEY) return; reportBusy = true;
+  try {
+    const r = await gas({ op: 'get', paths: ['live/report_req'] }); const d = r.docs && r.docs['live/report_req'];
+    const q = d && d.data; if (q && q.ts && q.ts !== lastReqTs && q.from && q.to) { lastReqTs = q.ts; await buildReport(q.from, q.to, q.label || '', q.ts); }
+  } catch (e) { } finally { reportBusy = false; }
+}
 // العرض عن بُعد خلف كلمة مرور
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:6080', ws: true });
 proxy.on('error', () => {});
@@ -255,15 +271,12 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/salla/status') {   // هل سلة مربوطة؟
     return (async () => { let ok = false, err = null; try { await sallaToken(); ok = true; } catch (e) { err = String(e.message || e); } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ linked: !!(SOAUTH && SOAUTH.refresh), tokenOk: ok, err, hasClientId: !!E.SALLA_CLIENT_ID })); })();
   }
-  if (req.url.startsWith('/report')) {   // تجهيز تقرير «حساب» عن فترة: سلة + بونات (الكاشير لاحقًا)
+  if (req.url.startsWith('/report')) {   // تجهيز تقرير «حساب» عن فترة (سلة + بونات)
     return (async () => {
       try {
         const u = new URL(req.url, 'http://x'); let from = u.searchParams.get('from'), to = u.searchParams.get('to');
         if (!from || !to) { const r = prevMonth(); from = r.from; to = r.to; }
-        const rep = { at: new Date().toISOString(), from, to, sources: {} };
-        rep.sources.salla = await readSalla(from, to);
-        let p; try { p = await ctx.newPage(); await p.goto('https://store.bonat.io/', { waitUntil: 'domcontentloaded', timeout: 30000 }); rep.sources.bonat = await readBonat(p, from, to); } catch (e) { rep.sources.bonat = { ok: false, err: String(e.message || e).slice(0, 120) }; } finally { if (p) await p.close().catch(() => {}); }
-        if (GAS && KEY) await gas({ op: 'set', path: 'live/hesab_report', data: rep }).catch(e => console.log('gas', e.message));
+        const rep = await buildReport(from, to, u.searchParams.get('label') || '', 0);
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(rep, null, 1));
       } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); }
     })();
@@ -272,4 +285,4 @@ const srv = http.createServer((req, res) => {
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setInterval(checkReportReq, 20e3); }).catch(e => { console.error(e); process.exit(1); });
