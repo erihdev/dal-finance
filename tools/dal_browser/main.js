@@ -240,6 +240,11 @@ const srv = http.createServer((req, res) => {
       } catch (e) { res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<meta charset=utf-8><body style="font-family:sans-serif;direction:rtl;text-align:center;padding:40px"><h2>تعذّر الربط</h2><p>' + String(e.message || e) + '</p></body>'); }
     })();
   }
+  if (req.url.startsWith('/salla/webhook')) {   // مستقبِل أحداث سلة (عام): نقبل ونخزّن آخر حدث
+    let b = ''; req.on('data', c => { b += c; if (b.length > 2e6) req.destroy(); });
+    req.on('end', () => { try { const j = JSON.parse(b || '{}'); if (j && /authorize/i.test(j.event || '') && j.data && j.data.access_token) { SOAUTH = { access: j.data.access_token, refresh: j.data.refresh_token || SOAUTH.refresh, exp: Date.now() + (+j.data.expires || 1209600) * 1000, at: Date.now() }; try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); } catch (e) {} } } catch (e) {} res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); });
+    return;
+  }
   if (!authed(req)) {
     if (req.url === '/import') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, err: 'الرمز غير صحيح' })); }   // بلا نافذة دخول حتى لا تعلق الإضافة
     res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dal"' }); return res.end('auth'); }
