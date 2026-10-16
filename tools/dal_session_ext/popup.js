@@ -8,10 +8,17 @@ const SITES = [
 const $ = id => document.getElementById(id);
 chrome.storage.local.get('pw').then(r => { if (r.pw) $('pw').value = r.pw; });
 async function storageOf(origin) {   // localStorage/sessionStorage من تبويب مفتوح لنفس الموقع (بعض المنصات تحفظ الدخول هناك)
-  const tabs = await chrome.tabs.query({ url: origin + '/*' });
-  if (!tabs.length) return null;
-  const [r] = await chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, func: () => ({ local: Object.assign({}, localStorage), session: Object.assign({}, sessionStorage) }) });
-  return r && r.result;
+  let tabs = await chrome.tabs.query({ url: origin + '/*' }), tmp = null;
+  if (!tabs.length) {   // لا يوجد تبويب مفتوح: نفتحه بالخلفية لحظات ثم نغلقه
+    tmp = await chrome.tabs.create({ url: origin + '/', active: false });
+    await new Promise(ok => { const f = (id, i) => { if (id === tmp.id && i.status === 'complete') { chrome.tabs.onUpdated.removeListener(f); ok(); } }; chrome.tabs.onUpdated.addListener(f); setTimeout(ok, 15000); });
+    await new Promise(ok => setTimeout(ok, 2500));
+    tabs = [tmp];
+  }
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: tabs[0].id }, func: () => ({ local: Object.assign({}, localStorage), session: Object.assign({}, sessionStorage) }) });
+    return r && r.result;
+  } finally { if (tmp) chrome.tabs.remove(tmp.id).catch(() => {}); }
 }
 $('go').onclick = async () => {
   const pw = $('pw').value.trim(); if (!pw) { $('out').textContent = 'اكتب الرمز أولاً'; return; }
@@ -24,7 +31,9 @@ $('go').onclick = async () => {
     const storage = {};
     for (const o of s.origins) { try { const st = await storageOf(o); if (st) storage[o] = st; } catch (e) {} }
     payload.sites[s.k] = { cookies, storage };
-    lines.push(`${s.name}: ${cookies.length} كوكي${Object.keys(storage).length ? ' + تخزين' : ''}`);
+    let tk = '';
+    if (s.k === 'bonat') { try { tk = JSON.parse(((storage['https://store.bonat.io'] || {}).local || {}).user || '{}').token ? ' · مفتاح الدخول ✓' : ' · ⚠️ لا يوجد مفتاح دخول (افتح بونات وسجّل دخولك)'; } catch (e) { tk = ' · ⚠️'; } }
+    lines.push(`${s.name}: ${cookies.length} كوكي${Object.keys(storage).length ? ' + تخزين' : ''}${tk}`);
   }
   try {
     const r = await fetch(SERVER + '/import', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + btoa('dal:' + pw) }, body: JSON.stringify(payload) });

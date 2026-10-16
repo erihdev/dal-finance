@@ -35,8 +35,10 @@ async function readSite(s) {
     const url = p.url();
     let text = '';
     if (!s.noText) text = (await p.evaluate(() => document.body ? document.body.innerText : '')).replace(/\n{3,}/g, '\n\n').trim().slice(0, 8000);
+    let hasToken;   // بونات: هل التوكن موجود في التخزين؟ (نعم/لا فقط، بلا قيمة)
+    if (s.k === 'bonat') hasToken = await p.evaluate(() => { try { return !!JSON.parse(localStorage.getItem('user') || '{}').token; } catch (e) { return false; } }).catch(() => null);
     const needLogin = s.login.test(url) || /تسجيل الدخول|Sign in|Log in|كلمة المرور|Password/i.test(text.slice(0, 600));
-    return { at: new Date().toISOString(), ok: !needLogin, needLogin, url, text };
+    return { at: new Date().toISOString(), ok: !needLogin, needLogin, url, text, hasToken };
   } catch (e) { return { at: new Date().toISOString(), ok: false, err: String(e.message || e).slice(0, 200) }; }
   finally { await p.close().catch(() => {}); }
 }
@@ -75,7 +77,7 @@ async function refreshInject() {   // نحقن تخزين الجلسة في كل
   await ctx.addInitScript(all => {
     try { const d = all[location.origin]; if (!d) return;
       for (const [a, v] of Object.entries(d.session || {})) sessionStorage.setItem(a, v);
-      for (const [a, v] of Object.entries(d.local || {})) if (localStorage.getItem(a) == null) localStorage.setItem(a, v); } catch (e) {}
+      for (const [a, v] of Object.entries(d.local || {})) if (localStorage.getItem(a) !== v) localStorage.setItem(a, v); } catch (e) {}   // الأحدث المنقول يغلب القديم (توكن بونات)
   }, SSTORE).catch(() => {});
 }
 const SS = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Lax' };
