@@ -2,9 +2,9 @@ const SERVER = 'https://browser-production-10fb.up.railway.app';
 const SITES = [
   { k: 'foodics', name: 'فودكس', domains: ['foodics.com'], origins: ['https://console.foodics.com', 'https://accounting.foodics.com'] },
   { k: 'retm', name: 'رتم', domains: ['retm.sa'], origins: ['https://retm.sa'] },
-  { k: 'bonat', name: 'بونات', domains: ['bonat.io'], origins: ['https://store.bonat.io', 'https://dashboard-api.bonat.io'] },
+  { k: 'bonat', name: 'بونات', domains: ['bonat.io'], origins: ['https://store.bonat.io', 'https://dashboard-api.bonat.io'], hdrHosts: ['dashboard-api.bonat.io', 'store.bonat.io'], topSite: 'https://bonat.io' },
   { k: 'olu', name: 'علو', domains: ['olu.sa'], origins: ['https://hr.olu.sa'] },
-  { k: 'salla', name: 'سلة', domains: ['salla.sa'], origins: ['https://s.salla.sa'], apiHost: 'api.salla.dev' },
+  { k: 'salla', name: 'سلة', domains: ['salla.sa'], origins: ['https://s.salla.sa'], apiHost: 'api.salla.dev', hdrHosts: ['s.salla.sa'], topSite: 'https://salla.sa' },
 ];
 const $ = id => document.getElementById(id);
 chrome.storage.local.get('pw').then(r => { if (r.pw) $('pw').value = r.pw; });
@@ -62,7 +62,7 @@ $('go').onclick = async () => {
       for (const d of s.domains) { try { add(await chrome.cookies.getAll({ domain: d, partitionKey: { topLevelSite: t } })); } catch (e) {} }
       for (const o of s.origins) { try { add(await chrome.cookies.getAll({ url: o + '/', partitionKey: { topLevelSite: t } })); } catch (e) {} }
     }
-    if (s.k === 'bonat') { add(cookiesFromHeader('dashboard-api.bonat.io', HDR['dashboard-api.bonat.io'], 'https://bonat.io')); add(cookiesFromHeader('store.bonat.io', HDR['store.bonat.io'], 'https://bonat.io')); }
+    for (const h of (s.hdrHosts || [])) add(cookiesFromHeader(h, HDR[h], s.topSite || ('https://' + s.domains[0])));
     const storage = {};
     for (const o of s.origins) { try { const st = await storageOf(o); if (st) storage[o] = st; } catch (e) {} }
     payload.sites[s.k] = { cookies, storage };
