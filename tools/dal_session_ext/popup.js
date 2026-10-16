@@ -7,6 +7,23 @@ const SITES = [
 ];
 const $ = id => document.getElementById(id);
 chrome.storage.local.get('pw').then(r => { if (r.pw) $('pw').value = r.pw; });
+// التقاط كوكي التصريح المخفي (HttpOnly/مقسّم) من ترويسة الطلب الحقيقية التي يرسلها المتصفح
+const HDR = {};   // host -> "name=val; name2=val2"
+function watchHeaders(hostPatterns) {
+  const listener = d => { const h = (d.requestHeaders || []).find(x => x.name.toLowerCase() === 'cookie'); if (h && h.value) HDR[new URL(d.url).host] = h.value; };
+  try { chrome.webRequest.onBeforeSendHeaders.addListener(listener, { urls: hostPatterns }, ['requestHeaders', 'extraHeaders']); } catch (e) {}
+  return () => { try { chrome.webRequest.onBeforeSendHeaders.removeListener(listener); } catch (e) {} };
+}
+async function openBriefly(origin, waitMs) {   // يفتح الموقع لحظات ليُصدر طلباته (فتلتقط الترويسة) ثم يغلقه
+  const tmp = await chrome.tabs.create({ url: origin + '/', active: false });
+  await new Promise(ok => { const f = (id, i) => { if (id === tmp.id && i.status === 'complete') { chrome.tabs.onUpdated.removeListener(f); ok(); } }; chrome.tabs.onUpdated.addListener(f); setTimeout(ok, 15000); });
+  await new Promise(ok => setTimeout(ok, waitMs || 7000));
+  await chrome.tabs.remove(tmp.id).catch(() => {});
+}
+function cookiesFromHeader(host, hdr, topLevelSite) {   // يحوّل ترويسة Cookie إلى كائنات كوكي للخادم (بلا إظهار القيم)
+  if (!hdr) return [];
+  return hdr.split(/;\s*/).map(p => { const i = p.indexOf('='); return i < 0 ? null : { name: p.slice(0, i), value: p.slice(i + 1), domain: host, hostOnly: true, path: '/', secure: true, sameSite: 'no_restriction', expirationDate: Math.floor(Date.now() / 1000) + 180 * 86400, partitionKey: { topLevelSite } }; }).filter(Boolean);
+}
 async function storageOf(origin) {   // localStorage/sessionStorage من تبويب مفتوح لنفس الموقع (بعض المنصات تحفظ الدخول هناك)
   let tabs = await chrome.tabs.query({ url: origin + '/*' }), tmp = null;
   if (!tabs.length) {   // لا يوجد تبويب مفتوح: نفتحه بالخلفية لحظات ثم نغلقه
@@ -23,7 +40,10 @@ async function storageOf(origin) {   // localStorage/sessionStorage من تبو�
 $('go').onclick = async () => {
   const pw = $('pw').value.trim(); if (!pw) { $('out').textContent = 'اكتب الرمز أولاً'; return; }
   await chrome.storage.local.set({ pw });
-  $('out').textContent = 'جارٍ النقل…';
+  $('out').textContent = 'جارٍ النقل… (قد يفتح بونات لحظة ثم يُغلق)';
+  // نراقب ترويسات بونات، ثم نفتح الموقع لحظة ليلتقط كوكي الدخول المخفي
+  const stop = watchHeaders(['*://dashboard-api.bonat.io/*', '*://store.bonat.io/*']);
+  try { await openBriefly('https://store.bonat.io', 8000); } catch (e) {}
   const payload = { sites: {} }; const lines = [];
   for (const s of SITES) {
     let cookies = [], seen = new Set();   // نجمع الكوكيز بالنطاق والعنوان والكوكيز المقسّمة (CHIPS) لكل خدمة
@@ -35,6 +55,7 @@ $('go').onclick = async () => {
       for (const d of s.domains) { try { add(await chrome.cookies.getAll({ domain: d, partitionKey: { topLevelSite: t } })); } catch (e) {} }
       for (const o of s.origins) { try { add(await chrome.cookies.getAll({ url: o + '/', partitionKey: { topLevelSite: t } })); } catch (e) {} }
     }
+    if (s.k === 'bonat') { add(cookiesFromHeader('dashboard-api.bonat.io', HDR['dashboard-api.bonat.io'], 'https://bonat.io')); add(cookiesFromHeader('store.bonat.io', HDR['store.bonat.io'], 'https://bonat.io')); }
     const storage = {};
     for (const o of s.origins) { try { const st = await storageOf(o); if (st) storage[o] = st; } catch (e) {} }
     payload.sites[s.k] = { cookies, storage };
@@ -48,4 +69,5 @@ $('go').onclick = async () => {
     if (!r.ok) throw new Error(j.err || r.status);
     $('out').innerHTML = '✅ انتقلت الجلسات:<br>' + lines.join('<br>') + '<br><br>نتيجة الفحص بعد دقيقة تقريباً تظهر في تطبيق دال.';
   } catch (e) { $('out').textContent = '❌ تعذّر النقل: ' + e.message + ' — تأكد من الرمز.'; }
+  finally { stop(); }
 };
