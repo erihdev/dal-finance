@@ -5,6 +5,8 @@
 'use strict';
 const http = require('http'), httpProxy = require('http-proxy');
 const { chromium } = require('playwright');
+const PARSE = require('./parse');
+let SALES = { at: null };
 const E = process.env;
 const USER = E.VIEW_USER || 'dal', PASS = E.VIEW_PASSWORD || '';
 const GAS = E.GAS_URL, KEY = E.DAL_KEY, POLL = (+E.POLL_MIN || 5) * 60e3;
@@ -47,6 +49,10 @@ async function poll(force) {
     state.at = new Date().toISOString();
     state.needLogin = SITES.filter(s => state.sites[s.k] && !state.sites[s.k].ok).map(s => s.name);
     if (GAS && KEY) await gas({ op: 'set', path: 'live/web_now', data: state }).catch(e => console.log('gas', e.message));
+    // أرقام المبيعات كما تظهر حرفياً في لوحتي رتم وفودكس
+    for (const k of ['retm', 'foodics']) { const st = state.sites[k]; const v = st && st.ok ? PARSE[k](st.text) : null; if (v) SALES[k] = Object.assign(v, { at: st.at }); }
+    SALES.at = new Date().toISOString();
+    if (GAS && KEY && (SALES.retm || SALES.foodics)) await gas({ op: 'set', path: 'live/sales_now', data: SALES }).catch(e => console.log('gas', e.message));
   } finally { busy = false; }
 }
 async function launch() {
