@@ -77,7 +77,7 @@ async function sallaExchange(params) {
   const r = await fetch('https://accounts.salla.sa/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body });
   const j = await r.json().catch(() => ({})); if (!r.ok || !j.access_token) throw new Error('salla-token-' + r.status + ' ' + (j.error || ''));
   SOAUTH = { access: j.access_token, refresh: j.refresh_token || SOAUTH.refresh, exp: Date.now() + (+j.expires_in || 1209600) * 1000, at: Date.now() };
-  try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); } catch (e) {}
+  try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); console.log('salla token saved, refresh:', !!SOAUTH.refresh); } catch (e) { console.log('salla save ERR', e.message); }
   return SOAUTH;
 }
 async function sallaToken() {
@@ -258,7 +258,7 @@ const srv = http.createServer((req, res) => {
   }
   if (req.url.startsWith('/salla/webhook')) {   // مستقبِل أحداث سلة (عام): نقبل ونخزّن آخر حدث
     let b = ''; req.on('data', c => { b += c; if (b.length > 2e6) req.destroy(); });
-    req.on('end', () => { try { const j = JSON.parse(b || '{}'); if (j && /authorize/i.test(j.event || '') && j.data && j.data.access_token) { SOAUTH = { access: j.data.access_token, refresh: j.data.refresh_token || SOAUTH.refresh, exp: Date.now() + (+j.data.expires || 1209600) * 1000, at: Date.now() }; try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); } catch (e) {} } } catch (e) {} res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); });
+    req.on('end', () => { try { const j = JSON.parse(b || '{}'); const dt = j && j.data; if (j && /authorize/i.test(j.event || '') && dt && dt.access_token && dt.refresh_token) { const exp = dt.expires && +dt.expires > 1e11 ? +dt.expires : Date.now() + (+dt.expires || 1209600) * 1000; SOAUTH = { access: dt.access_token, refresh: dt.refresh_token, exp, at: Date.now() }; try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); console.log('salla token via webhook, refresh ok'); } catch (e) {} } } catch (e) {} res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); });
     return;
   }
   if (!authed(req)) {
