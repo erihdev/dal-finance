@@ -7,7 +7,7 @@ const http = require('http'), httpProxy = require('http-proxy');
 const { chromium } = require('playwright');
 const PARSE = require('./parse');
 let SALES = { at: null };
-const E = process.env;
+const E = process.env; const fs = require('fs');
 const USER = E.VIEW_USER || 'dal', PASS = E.VIEW_PASSWORD || '';
 const GAS = E.GAS_URL, KEY = E.DAL_KEY, POLL = (+E.POLL_MIN || 5) * 60e3;
 const SITES = [
@@ -165,7 +165,7 @@ async function launch() {
   console.log('browser up');
 }
 // استيراد جلسات الدخول من إضافة كروم (كوكيز + تخزين المتصفح) — لا كلمات مرور
-const fs = require('fs'); const SFILE = '/data/session_storage.json', AFILE = '/data/auth_headers.json';
+const SFILE = '/data/session_storage.json', AFILE = '/data/auth_headers.json';
 let SSTORE = {}; try { SSTORE = JSON.parse(fs.readFileSync(SFILE, 'utf8')); } catch (e) {}
 let AUTHH = {}; try { AUTHH = JSON.parse(fs.readFileSync(AFILE, 'utf8')); } catch (e) {}   // host -> "Bearer ..." (مفاتيح واجهات مثل سلة)
 async function refreshInject() {   // نحقن تخزين الجلسة في كل صفحة من نفس الموقع (sessionStorage يضيع مع إغلاق التبويب)
