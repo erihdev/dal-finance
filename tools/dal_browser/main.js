@@ -135,6 +135,8 @@ function importSessions(req, res) {
             sameSite: SS[c.sameSite] || 'Lax', expires: c.session || !c.expirationDate ? -1 : Math.floor(c.expirationDate) };
           if (c.hostOnly || /^__Host-/.test(c.name)) o.url = 'https://' + c.domain.replace(/^\./, '') + (c.path || '/');   // كوكي خاص بالنطاق نفسه
           else { o.domain = c.domain; o.path = c.path || '/'; }
+          const pk = c.partitionKey && (c.partitionKey.topLevelSite || (typeof c.partitionKey === 'string' ? c.partitionKey : ''));
+          if (pk) { o.partitionKey = pk; o.secure = true; if (o.sameSite !== 'None') o.sameSite = 'None'; }   // كوكي مقسّم (CHIPS) يلزمه Secure + SameSite=None
           if (o.sameSite === 'None' && !o.secure) o.sameSite = 'Lax';
           return o; });
         // الترتيب مهم: التخزين (مفتاح الدخول) أولاً ثم الكوكيز؛ وإلا تفتح الصفحة بلا مفتاح فتحذف كوكي الدخول (is_auth في بونات)
@@ -150,7 +152,7 @@ function importSessions(req, res) {
           } catch (e) { } finally { await p.close().catch(() => {}); }
         }
         let added = 0;
-        for (const ck of cookies) { try { await ctx.addCookies([ck]); added++; } catch (e) { console.log('cookie', k, ck.name, e.message.slice(0, 120)); } }
+        for (const ck of cookies) { try { await ctx.addCookies([ck]); added++; } catch (e) { if (ck.partitionKey) { const c2 = Object.assign({}, ck); delete c2.partitionKey; try { await ctx.addCookies([c2]); added++; continue; } catch (e2) {} } console.log('cookie', k, ck.name, e.message.slice(0, 120)); } }
         if (k === 'bonat') { const now = (await ctx.cookies('https://store.bonat.io')).map(c => c.name); console.log('bonat sent', cookies.map(c => c.name + (c.url ? '@host' : '@' + c.domain) + ':' + c.expires).join(' '), '| now', now.join(',')); }
         out[k] = { cookies: added, of: cookies.length, storage: st };
       }

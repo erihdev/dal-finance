@@ -26,10 +26,15 @@ $('go').onclick = async () => {
   $('out').textContent = 'جارٍ النقل…';
   const payload = { sites: {} }; const lines = [];
   for (const s of SITES) {
-    let cookies = [], seen = new Set();   // نجمع الكوكيز بالنطاق وبعنوان كل خدمة (ليشمل كوكيز dashboard-api المخفية)
-    const add = arr => { for (const c of arr || []) { const id = c.name + '@' + c.domain + c.path; if (!seen.has(id)) { seen.add(id); cookies.push(c); } } };
+    let cookies = [], seen = new Set();   // نجمع الكوكيز بالنطاق والعنوان والكوكيز المقسّمة (CHIPS) لكل خدمة
+    const add = arr => { for (const c of arr || []) { const id = c.name + '@' + c.domain + c.path + '|' + (c.partitionKey ? (c.partitionKey.topLevelSite || JSON.stringify(c.partitionKey)) : ''); if (!seen.has(id)) { seen.add(id); cookies.push(c); } } };
+    const tops = [...new Set(s.domains.map(d => 'https://' + d).concat(s.origins))];   // مفاتيح التقسيم المحتملة
     for (const d of s.domains) { try { add(await chrome.cookies.getAll({ domain: d })); } catch (e) {} }
     for (const o of s.origins) { try { add(await chrome.cookies.getAll({ url: o + '/' })); } catch (e) {} }
+    for (const t of tops) {
+      for (const d of s.domains) { try { add(await chrome.cookies.getAll({ domain: d, partitionKey: { topLevelSite: t } })); } catch (e) {} }
+      for (const o of s.origins) { try { add(await chrome.cookies.getAll({ url: o + '/', partitionKey: { topLevelSite: t } })); } catch (e) {} }
+    }
     const storage = {};
     for (const o of s.origins) { try { const st = await storageOf(o); if (st) storage[o] = st; } catch (e) {} }
     payload.sites[s.k] = { cookies, storage };
