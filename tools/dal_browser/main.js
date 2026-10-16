@@ -18,6 +18,7 @@ const SITES = [
   { k: 'tamara', name: 'تمارا', url: 'https://partners.tamara.co/#/dashboard', login: /login|signin|otp|verify/i, noText: true },
 ];
 let ctx = null, state = { at: null, sites: {} }, busy = false, viewers = 0, lastView = 0;
+const SLOGF = '/data/sales_log.json'; let SLOG = {}; try { SLOG = JSON.parse(fs.readFileSync(SLOGF, 'utf8')); } catch (e) {}
 
 const START = `<!doctype html><meta charset=utf-8><title>متصفح دال</title><body style="font-family:sans-serif;direction:rtl;padding:24px;background:#FFF7F0">
 <h2>متصفح دال في السحابة</h2><p>سجّل دخولك بنفسك في كل منصة مرة واحدة. الجلسة تبقى محفوظة، والقارئ يقرأ اللوحات كل ${E.POLL_MIN || 5} دقائق (قراءة فقط).</p>
@@ -145,6 +146,12 @@ async function poll(force) {
     if (GAS && KEY) await gas({ op: 'set', path: 'live/web_now', data: state }).catch(e => console.log('gas', e.message));
     // أرقام المبيعات كما تظهر حرفياً في لوحتي رتم وفودكس
     for (const k of ['retm', 'foodics']) { const st = state.sites[k]; const v = st && st.ok ? PARSE[k](st.text) : null; if (v) SALES[k] = Object.assign(v, { at: st.at }); }
+    // سجل قراءات اليوم (كل 5 دقائق) لمقارنة «أمس في نفس الوقت» بدل أمس كاملًا
+    try { const r = SALES.retm; if (r && r.revenue != null) { const n = new Date(Date.now() + 3 * 3600e3); const d = n.toISOString().slice(0, 10), hm = n.getUTCHours() * 60 + n.getUTCMinutes();
+      SLOG[d] = SLOG[d] || []; SLOG[d].push([hm, r.revenue, r.invoices || 0]); for (const k of Object.keys(SLOG)) if (k < new Date(Date.now() + 3 * 3600e3 - 3 * 864e5).toISOString().slice(0, 10)) delete SLOG[k];
+      const yd = new Date(Date.now() + 3 * 3600e3 - 864e5).toISOString().slice(0, 10); const Y = SLOG[yd] || []; let best = null; for (const e of Y) if (e[0] <= hm + 3) best = e;
+      r.ySame = best ? { revenue: best[1], invoices: best[2], at: yd + ' ' + String(Math.floor(best[0] / 60)).padStart(2, '0') + ':' + String(best[0] % 60).padStart(2, '0') } : null;
+      r.today = SLOG[d].map(e => [e[0], e[1]]); fs.writeFileSync(SLOGF, JSON.stringify(SLOG)); } } catch (e) { }
     SALES.at = new Date().toISOString();
     if (GAS && KEY && (SALES.retm || SALES.foodics)) await gas({ op: 'set', path: 'live/sales_now', data: SALES }).catch(e => console.log('gas', e.message));
     // مؤشرات بونات (عملاء/زيارات/تقييمات) في مستند مستقل للتطبيق
