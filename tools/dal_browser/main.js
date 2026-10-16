@@ -27,27 +27,56 @@ async function gas(o) {
   const r = await fetch(GAS, { method: 'POST', body: JSON.stringify(o), redirect: 'follow', headers: { 'Content-Type': 'text/plain' } });
   const j = await r.json(); if (!j.ok) throw new Error('gas ' + j.err); return j;
 }
+function riyadhToday() {   // تاريخ اليوم بتوقيت الرياض (UTC+3)
+  const d = new Date(Date.now() + 3 * 3600e3);
+  return d.toISOString().slice(0, 10);
+}
+async function readBonat(p) {   // قراءة مؤشرات بونات من dashboard-api بالكوكيز المنقولة
+  const day = riyadhToday();
+  try {
+    const stats = await p.evaluate(async (day) => {
+      const B = 'https://dashboard-api.bonat.io/api/v5/';
+      const q = '?from=' + day + 'T00:00:00&to=' + day + 'T23:59:59';
+      const m = {
+        customers: 'customers/count', newCustomers: 'customers/count-new-customers',
+        visits: 'visits/count', totalSale: 'customers/total-sale',
+        discountSale: 'customers/total-discount-sale', giftcardSale: 'customers/total-giftcard-sale',
+        pickupSale: 'customers/total-pickup-sale', retentionRate: 'customers/retention-rate',
+        feedbacks: 'feedbacks/count', feedbackAvg: 'feedbacks/overall',
+        feedbackPositive: 'feedbacks/positive-count', feedbackNegative: 'feedbacks/negative-count'
+      };
+      const out = {}; let okAny = false;
+      for (const [k, e] of Object.entries(m)) {
+        try {
+          const r = await fetch(B + e + q, { credentials: 'include', headers: { Accept: 'application/json' } });
+          if (r.status === 200) { const j = await r.json(); const v = (j && j.data !== undefined) ? j.data : j; if (typeof v === 'number' || typeof v === 'string') { out[k] = v; okAny = true; } }
+          else if (r.status === 401 || r.status === 403) out.__auth = r.status;
+        } catch (e) {}
+      }
+      return { okAny, out };
+    }, day).catch(e => ({ err: String(e.message || e).slice(0, 160) }));
+    if (stats && stats.err) return { ok: false, err: stats.err };
+    if (!stats || !stats.okAny) return { ok: false, err: 'auth ' + ((stats && stats.out && stats.out.__auth) || '—') };
+    delete stats.out.__auth;
+    return { ok: true, stats: Object.assign({ day }, stats.out) };
+  } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 160) }; }
+}
 async function readSite(s) {
   const p = await ctx.newPage();
-  const api = [];   // بونات: رموز حالة طلبات الواجهة فقط (بلا محتوى)
-  if (s.k === 'bonat') p.on('response', r => { const u = r.url(); if (/dashboard-api\.bonat\.io\/api/.test(u) && !/\/image\//.test(u) && api.length < 15) api.push(r.status() + ' ' + r.request().method() + ' ' + u.replace(/^https:\/\/[^/]+/, '').split('?')[0]); });
   try {
     await p.goto(s.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await p.waitForTimeout(6000);
     const url = p.url();
     let text = '';
     if (!s.noText) text = (await p.evaluate(() => document.body ? document.body.innerText : '')).replace(/\n{3,}/g, '\n\n').trim().slice(0, 8000);
-    let hasToken;   // بونات: هل التوكن موجود في التخزين؟ (نعم/لا فقط، بلا قيمة)
-    let diag;
+    // بونات يصرّح عن واجهته بالكوكيز (لا بمفتاح localStorage)، فنقرأ الأرقام من الواجهة مباشرة ولا نعتمد على ظهور اللوحة
     if (s.k === 'bonat') {
-      hasToken = await p.evaluate(() => { try { return !!JSON.parse(localStorage.getItem('user') || '{}').token; } catch (e) { return false; } }).catch(() => null);
-      const ck = (await ctx.cookies('https://store.bonat.io')).map(c => c.name);
-      const ls = await p.evaluate(() => Object.keys(localStorage)).catch(() => []);
-      let dk = await p.evaluate(() => { try { const d = JSON.parse(localStorage.getItem('date') || 'null'); return d && typeof d === 'object' ? Object.keys(d) : typeof d; } catch (e) { return 'نص'; } }).catch(() => null);
-      diag = { api, isAuth: ck.includes('is_auth'), cookies: ck.length, lsHas: ['user', 'info', 'date'].filter(k => ls.includes(k)), dateKeys: dk };
+      const b = await readBonat(p);
+      if (b.ok) return { at: new Date().toISOString(), ok: true, url, stats: b.stats };
+      return { at: new Date().toISOString(), ok: false, needLogin: true, url, err: b.err };
     }
     const needLogin = s.login.test(url) || /تسجيل الدخول|Sign in|Log in|كلمة المرور|Password/i.test(text.slice(0, 600));
-    return { at: new Date().toISOString(), ok: !needLogin, needLogin, url, text, hasToken, diag };
+    return { at: new Date().toISOString(), ok: !needLogin, needLogin, url, text };
   } catch (e) { return { at: new Date().toISOString(), ok: false, err: String(e.message || e).slice(0, 200) }; }
   finally { await p.close().catch(() => {}); }
 }
@@ -64,6 +93,9 @@ async function poll(force) {
     for (const k of ['retm', 'foodics']) { const st = state.sites[k]; const v = st && st.ok ? PARSE[k](st.text) : null; if (v) SALES[k] = Object.assign(v, { at: st.at }); }
     SALES.at = new Date().toISOString();
     if (GAS && KEY && (SALES.retm || SALES.foodics)) await gas({ op: 'set', path: 'live/sales_now', data: SALES }).catch(e => console.log('gas', e.message));
+    // مؤشرات بونات (عملاء/زيارات/تقييمات) في مستند مستقل للتطبيق
+    const bs = state.sites.bonat;
+    if (GAS && KEY && bs && bs.ok && bs.stats) await gas({ op: 'set', path: 'live/bonat_now', data: Object.assign({ at: bs.at }, bs.stats) }).catch(e => console.log('gas', e.message));
   } finally { busy = false; }
 }
 async function launch() {
@@ -119,6 +151,7 @@ function importSessions(req, res) {
         }
         let added = 0;
         for (const ck of cookies) { try { await ctx.addCookies([ck]); added++; } catch (e) { console.log('cookie', k, ck.name, e.message.slice(0, 120)); } }
+        if (k === 'bonat') { const now = (await ctx.cookies('https://store.bonat.io')).map(c => c.name); console.log('bonat sent', cookies.map(c => c.name + (c.url ? '@host' : '@' + c.domain) + ':' + c.expires).join(' '), '| now', now.join(',')); }
         out[k] = { cookies: added, of: cookies.length, storage: st };
       }
       try { fs.writeFileSync(SFILE, JSON.stringify(SSTORE)); } catch (e) {}
