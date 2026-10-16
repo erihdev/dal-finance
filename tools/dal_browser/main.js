@@ -154,7 +154,7 @@ async function poll(force) {
 }
 async function launch() {
   ctx = await chromium.launchPersistentContext('/data/profile', {
-    headless: false, viewport: null, locale: 'ar-SA', timezoneId: 'Asia/Riyadh',
+    headless: false, viewport: null, locale: 'ar-SA', timezoneId: 'Asia/Riyadh', acceptDownloads: true,
     args: ['--no-sandbox', '--start-maximized', '--disable-dev-shm-usage', '--lang=ar', '--disable-gpu', '--disable-smooth-scrolling', '--wm-window-animations-disabled'],
     ignoreDefaultArgs: ['--enable-automation'],
   });
@@ -235,6 +235,20 @@ function tamaraInvoiceParse(txt) {   // يقرأ الفاتورة الضريبي
   return out;
 }
 async function pdfText(file) { return new Promise(res => require('child_process').execFile('pdftotext', ['-layout', file, '-'], { maxBuffer: 5e6 }, (e, so) => res(e ? '' : String(so)))); }
+
+async function tamaraDownloadRow(p, name, file) {   // يضغط زر التنزيل في صف الفاتورة ويلتقط الملف (حدث تنزيل أو نافذة جديدة)
+  try {
+    if (!/invoices\/list/.test(p.url())) { await p.goto('https://partners.tamara.co/#/invoices/list', { waitUntil: 'domcontentloaded', timeout: 30000 }); }
+    const row = p.locator('tr', { hasText: name }).first(); await row.waitFor({ timeout: 15000 });
+    const btn = row.locator('button, a').last();
+    const popupP = ctx.waitForEvent('page', { timeout: 20000 }).catch(() => null);
+    const dlP = p.waitForEvent('download', { timeout: 20000 }).catch(() => null);
+    await btn.click();
+    const dl = await dlP; if (dl) { await dl.saveAs(file); return true; }
+    const pop = await popupP; if (pop) { const u = pop.url(); try { const resp = await ctx.request.get(u); if (resp.ok()) { fs.writeFileSync(file, await resp.body()); await pop.close().catch(() => {}); return true; } } catch (e) {} await pop.close().catch(() => {}); }
+  } catch (e) { console.log('tamara dl', name, String(e.message || e).slice(0, 120)); }
+  return false;
+}
 async function readTamara(from, to) {
   const out = { ok: false, at: new Date().toISOString() };
   if (!ctx) return Object.assign(out, { err: 'no-browser' });
@@ -257,6 +271,7 @@ async function readTamara(from, to) {
         const file = TDIR + '/' + i.name + '.pdf'; const u = i.url;
         let ok = fs.existsSync(file);
         if (!ok && u) { const b = await p.evaluate(async u => { const r = await fetch(u, { credentials: 'include' }); if (!r.ok) throw new Error('http ' + r.status); return Array.from(new Uint8Array(await r.arrayBuffer())); }, u).catch(e => null); if (b) { fs.writeFileSync(file, Buffer.from(b)); ok = true; } }
+        if (!ok) ok = await tamaraDownloadRow(p, i.name, file);   // الزر في الصفحة (تنزيل أو تبويب جديد)
         const parsed = ok ? tamaraInvoiceParse(await pdfText(file)) : { err: 'no-file' };
         out.taxInvoices.push(Object.assign({ name: i.name, file: ok ? file : null }, parsed));
       } catch (e) { out.taxInvoices.push({ name: i.name, err: String(e.message || e).slice(0, 120) }); }
@@ -266,7 +281,7 @@ async function readTamara(from, to) {
     const tx = find(caught.transactions) || []; const inRange = tx.filter(t => { const s = JSON.stringify(t); const d = (s.match(/20\d{2}-\d{2}-\d{2}/) || [])[0]; return d && d >= from && d <= to; });
     out.transactions = { count: inRange.length, totalAll: tx.length, sample: inRange.slice(0, 3) };
     out.settlement = caught.settlement || null;
-    out.invoices = out.invoices.map(i => ({ name: i.name, type: i.type, hasUrl: !!i.url }));
+    out.invoices = out.invoices.map(i => ({ name: i.name, type: i.type, hasUrl: !!i.url, keys: Object.keys(i._ || {}) }));
   } catch (e) { out.err = String(e.message || e).slice(0, 160); }
   finally { await p.close().catch(() => {}); }
   return out;
