@@ -72,14 +72,19 @@ function schedule() {
   timer = setTimeout(flush, Date.now() - firstAt > 15000 ? 0 : 5000);
 }
 async function flush() {
-  if (!dirty) return; dirty = false; firstAt = 0;
+  if (!dirty || !seeded) { if (!seeded) setTimeout(flush, 15000); return; } dirty = false; firstAt = 0;
   const cut = Date.now() - KEEP_MS;
   buf = buf.filter(m => m.t >= cut).sort((a, b) => a.t - b.t).slice(-MAX);
   try { await gas({ op: 'set', path: 'live/wa_live', data: { at: new Date().toISOString(), n: buf.length, msgs: buf } }); lastOk = Date.now(); lastErr = ''; }
   catch (e) { lastErr = String(e.message || e); dirty = true; setTimeout(flush, 30000); }
 }
-async function seed() {
-  try { const r = await gas({ op: 'get', paths: ['live/wa_live'] }); const d = r.docs['live/wa_live']; if (d && d.data && Array.isArray(d.data.msgs)) buf = d.data.msgs; } catch (e) { lastErr = 'seed ' + e.message; }
+let seeded = false;
+async function seed() {   // لا نكتب فوق الأرشيف قبل قراءته (حتى لا يضيع عند إعادة التشغيل)؛ نعيد المحاولة حتى تنجح ثم ندمج
+  for (let i = 0; i < 20 && !seeded; i++) {
+    try { const r = await gas({ op: 'get', paths: ['live/wa_live'] }); const d = r.docs && r.docs['live/wa_live']; const old = (d && d.data && Array.isArray(d.data.msgs)) ? d.data.msgs : [];
+      const ids = new Set(buf.map(m => m.id)); for (const m of old) if (!ids.has(m.id)) buf.push(m); seeded = true; if (buf.length) schedule(); }
+    catch (e) { lastErr = 'seed ' + e.message; await new Promise(ok => setTimeout(ok, 15000)); }
+  }
 }
 
 // عملاء الواتس: كل محادثة فردية (لا مجموعات ولا المستبعَدين) من WAHA → live/cust_wa مرة يوميًا وعند الطلب
@@ -125,5 +130,6 @@ const srv = http.createServer((req, res) => {
     try { const j = JSON.parse(b || '{}'); if (/^message(\.any)?$/.test(j.event) && j.payload) await onMsg(j.payload); } catch (e) { lastErr = 'hook ' + e.message; }
   });
 });
-seed().finally(() => srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('relay up')));
+srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('relay up'));
+seed();
 process.on('SIGTERM', async () => { await flush(); process.exit(0); });
