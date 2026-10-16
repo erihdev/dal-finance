@@ -29,6 +29,8 @@ async function gas(o) {
 }
 async function readSite(s) {
   const p = await ctx.newPage();
+  const api = [];   // بونات: رموز حالة طلبات الواجهة فقط (بلا محتوى)
+  if (s.k === 'bonat') p.on('response', r => { const u = r.url(); if (/dashboard-api\.bonat\.io\/api/.test(u) && !/\/image\//.test(u) && api.length < 15) api.push(r.status() + ' ' + r.request().method() + ' ' + u.replace(/^https:\/\/[^/]+/, '').split('?')[0]); });
   try {
     await p.goto(s.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await p.waitForTimeout(6000);
@@ -36,9 +38,16 @@ async function readSite(s) {
     let text = '';
     if (!s.noText) text = (await p.evaluate(() => document.body ? document.body.innerText : '')).replace(/\n{3,}/g, '\n\n').trim().slice(0, 8000);
     let hasToken;   // بونات: هل التوكن موجود في التخزين؟ (نعم/لا فقط، بلا قيمة)
-    if (s.k === 'bonat') hasToken = await p.evaluate(() => { try { return !!JSON.parse(localStorage.getItem('user') || '{}').token; } catch (e) { return false; } }).catch(() => null);
+    let diag;
+    if (s.k === 'bonat') {
+      hasToken = await p.evaluate(() => { try { return !!JSON.parse(localStorage.getItem('user') || '{}').token; } catch (e) { return false; } }).catch(() => null);
+      const ck = (await ctx.cookies('https://store.bonat.io')).map(c => c.name);
+      const ls = await p.evaluate(() => Object.keys(localStorage)).catch(() => []);
+      let dk = await p.evaluate(() => { try { const d = JSON.parse(localStorage.getItem('date') || 'null'); return d && typeof d === 'object' ? Object.keys(d) : typeof d; } catch (e) { return 'نص'; } }).catch(() => null);
+      diag = { api, isAuth: ck.includes('is_auth'), cookies: ck.length, lsHas: ['user', 'info', 'date'].filter(k => ls.includes(k)), dateKeys: dk };
+    }
     const needLogin = s.login.test(url) || /تسجيل الدخول|Sign in|Log in|كلمة المرور|Password/i.test(text.slice(0, 600));
-    return { at: new Date().toISOString(), ok: !needLogin, needLogin, url, text, hasToken };
+    return { at: new Date().toISOString(), ok: !needLogin, needLogin, url, text, hasToken, diag };
   } catch (e) { return { at: new Date().toISOString(), ok: false, err: String(e.message || e).slice(0, 200) }; }
   finally { await p.close().catch(() => {}); }
 }
@@ -96,10 +105,10 @@ function importSessions(req, res) {
           else { o.domain = c.domain; o.path = c.path || '/'; }
           if (o.sameSite === 'None' && !o.secure) o.sameSite = 'Lax';
           return o; });
-        let added = 0;
-        for (const ck of cookies) { try { await ctx.addCookies([ck]); added++; } catch (e) { console.log('cookie', k, ck.name, e.message.slice(0, 120)); } }
+        // الترتيب مهم: التخزين (مفتاح الدخول) أولاً ثم الكوكيز؛ وإلا تفتح الصفحة بلا مفتاح فتحذف كوكي الدخول (is_auth في بونات)
         let st = 0;
         for (const [origin, data] of Object.entries(site.storage || {})) SSTORE[origin] = data;
+        await refreshInject();
         for (const [origin, data] of Object.entries(site.storage || {})) {
           const p = await ctx.newPage();
           try {
@@ -108,6 +117,8 @@ function importSessions(req, res) {
             st++;
           } catch (e) { } finally { await p.close().catch(() => {}); }
         }
+        let added = 0;
+        for (const ck of cookies) { try { await ctx.addCookies([ck]); added++; } catch (e) { console.log('cookie', k, ck.name, e.message.slice(0, 120)); } }
         out[k] = { cookies: added, of: cookies.length, storage: st };
       }
       try { fs.writeFileSync(SFILE, JSON.stringify(SSTORE)); } catch (e) {}
