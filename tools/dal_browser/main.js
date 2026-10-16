@@ -56,11 +56,22 @@ async function launch() {
     ignoreDefaultArgs: ['--enable-automation'],
   });
   ctx.on('close', () => { ctx = null; setTimeout(launch, 3000); });
+  await refreshInject();
   const p = ctx.pages()[0] || await ctx.newPage();
   await p.setContent(START);
   console.log('browser up');
 }
 // استيراد جلسات الدخول من إضافة كروم (كوكيز + تخزين المتصفح) — لا كلمات مرور
+const fs = require('fs'); const SFILE = '/data/session_storage.json';
+let SSTORE = {}; try { SSTORE = JSON.parse(fs.readFileSync(SFILE, 'utf8')); } catch (e) {}
+async function refreshInject() {   // نحقن تخزين الجلسة في كل صفحة من نفس الموقع (sessionStorage يضيع مع إغلاق التبويب)
+  if (!ctx || !Object.keys(SSTORE).length) return;
+  await ctx.addInitScript(all => {
+    try { const d = all[location.origin]; if (!d) return;
+      for (const [a, v] of Object.entries(d.session || {})) sessionStorage.setItem(a, v);
+      for (const [a, v] of Object.entries(d.local || {})) if (localStorage.getItem(a) == null) localStorage.setItem(a, v); } catch (e) {}
+  }, SSTORE).catch(() => {});
+}
 const SS = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Lax' };
 function importSessions(req, res) {
   let b = ''; req.on('data', c => { b += c; if (b.length > 5e6) req.destroy(); });
@@ -76,6 +87,7 @@ function importSessions(req, res) {
           .map(c => (c.sameSite === 'None' && !c.secure ? Object.assign(c, { sameSite: 'Lax' }) : c));
         if (cookies.length) await ctx.addCookies(cookies);
         let st = 0;
+        for (const [origin, data] of Object.entries(site.storage || {})) SSTORE[origin] = data;
         for (const [origin, data] of Object.entries(site.storage || {})) {
           const p = await ctx.newPage();
           try {
@@ -86,6 +98,8 @@ function importSessions(req, res) {
         }
         out[k] = { cookies: cookies.length, storage: st };
       }
+      try { fs.writeFileSync(SFILE, JSON.stringify(SSTORE)); } catch (e) {}
+      await refreshInject();
       lastView = 0; setTimeout(() => poll(true), 3000);
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, out }));
     } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); }
