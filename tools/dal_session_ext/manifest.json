@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "دال — نقل الجلسات للمتصفح السحابي",
-  "version": "1.6",
+  "version": "1.7",
   "description": "ينقل جلسات الدخول (بدون كلمات مرور) لفودكس ورتم وبونات وعلو إلى متصفح دال السحابي بضغطة زر.",
   "permissions": [
     "cookies",
@@ -19,6 +19,7 @@
     "https://browser-production-10fb.up.railway.app/*",
     "https://*.salla.sa/*",
     "https://s.salla.sa/*",
+    "https://*.tamara.co/*",
     "https://api.salla.dev/*"
   ],
   "action": {

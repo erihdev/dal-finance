@@ -4,6 +4,7 @@ const SITES = [
   { k: 'retm', name: 'رتم', domains: ['retm.sa'], origins: ['https://retm.sa'] },
   { k: 'bonat', name: 'بونات', domains: ['bonat.io'], origins: ['https://store.bonat.io', 'https://dashboard-api.bonat.io'], hdrHosts: ['dashboard-api.bonat.io', 'store.bonat.io'], topSite: 'https://bonat.io' },
   { k: 'olu', name: 'علو', domains: ['olu.sa'], origins: ['https://hr.olu.sa'] },
+  { k: 'tamara', name: 'تمارا', domains: ['tamara.co'], origins: ['https://partners.tamara.co'], apiHost: 'partner-api.tamara.co', hdrHosts: ['partner-api.tamara.co', 'partners.tamara.co'], topSite: 'https://tamara.co' },
   { k: 'salla', name: 'سلة', domains: ['salla.sa'], origins: ['https://s.salla.sa'], apiHost: 'api.salla.dev', hdrHosts: ['s.salla.sa'], topSite: 'https://salla.sa' },
 ];
 const $ = id => document.getElementById(id);
@@ -48,9 +49,10 @@ $('go').onclick = async () => {
   await chrome.storage.local.set({ pw });
   $('out').textContent = 'جارٍ النقل… (قد يفتح بونات لحظة ثم يُغلق)';
   // نراقب ترويسات بونات وسلة، ثم نفتح الموقعين لحظة لالتقاط مفاتيح الدخول المخفية
-  const stop = watchHeaders(['*://dashboard-api.bonat.io/*', '*://store.bonat.io/*', '*://api.salla.dev/*', '*://s.salla.sa/*']);
+  const stop = watchHeaders(['*://dashboard-api.bonat.io/*', '*://store.bonat.io/*', '*://api.salla.dev/*', '*://s.salla.sa/*', '*://partner-api.tamara.co/*', '*://partners.tamara.co/*']);
   try { await openBriefly('https://store.bonat.io', 8000); } catch (e) {}
   try { await openBriefly('https://s.salla.sa', 8000); } catch (e) {}
+  try { await openBriefly('https://partners.tamara.co/#/invoices/list', 9000); } catch (e) {}
   const payload = { sites: {}, authHeaders: {} }; const lines = [];
   for (const s of SITES) {
     let cookies = [], seen = new Set();   // نجمع الكوكيز بالنطاق والعنوان والكوكيز المقسّمة (CHIPS) لكل خدمة

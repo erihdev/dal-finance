@@ -15,6 +15,7 @@ const SITES = [
   { k: 'retm', name: 'رتم', url: 'https://retm.sa/dashboard?period=1', login: /login|signin/i },
   { k: 'bonat', name: 'بونات', url: 'https://store.bonat.io/', login: /login|signin/i },
   { k: 'olu', name: 'علو', url: 'https://hr.olu.sa/', login: /login|signin/i, noText: true },
+  { k: 'tamara', name: 'تمارا', url: 'https://partners.tamara.co/#/dashboard', login: /login|signin|otp|verify/i, noText: true },
 ];
 let ctx = null, state = { at: null, sites: {} }, busy = false, viewers = 0, lastView = 0;
 
@@ -219,11 +220,63 @@ function importSessions(req, res) {
     } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); }
   });
 }
-// ===== مُجهّز تقرير «حساب»: سلة + بونات لفترة، ويكتبه في live/hesab_report =====
+
+// ===== تمارا: قراءة التسوية والعمليات والفواتير من بوابة الشركاء بالجلسة المنقولة (لا واجهة رسمية للتسويات) =====
+const TDIR = '/data/tamara'; try { fs.mkdirSync(TDIR, { recursive: true }); } catch (e) {}
+function tamaraInvoiceParse(txt) {   // يقرأ الفاتورة الضريبية الشهرية (PDF→نص): الرقم، الفترة، الرسوم، الضريبة، الإجمالي
+  const g = re => { const m = txt.match(re); return m ? m[1].trim() : null; };
+  const num = v => v == null ? null : +String(v).replace(/,/g, '');
+  const out = { invoice: g(/Invoice Number\s+(\d+)/), issued: g(/Invoice Issue Date\s+(\d{4}-\d{2}-\d{2})/), period: g(/Transaction Period\s+(\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2})/) };
+  const tot = txt.match(/Total Amounts[\s\S]*?([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})/);
+  if (tot) Object.assign(out, { fees: num(tot[1]), taxable: num(tot[2]), vat: num(tot[3]), prepaid: num(tot[4]), total: num(tot[5]) });
+  const lines = []; const re = /^\s*(.+?\/\s*\S+)\s+([\d,]+\.\d{2})\s+(\d+)\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$/gm; let m;
+  while ((m = re.exec(txt))) if (!/Total/i.test(m[1])) lines.push({ item: m[1].replace(/\s+/g, ' '), price: num(m[2]), qty: +m[3], fees: num(m[4]), vat: num(m[5]), total: num(m[6]) });
+  if (lines.length) out.lines = lines;
+  return out;
+}
+async function pdfText(file) { return new Promise(res => require('child_process').execFile('pdftotext', ['-layout', file, '-'], { maxBuffer: 5e6 }, (e, so) => res(e ? '' : String(so)))); }
+async function readTamara(from, to) {
+  const out = { ok: false, at: new Date().toISOString() };
+  if (!ctx) return Object.assign(out, { err: 'no-browser' });
+  const p = await ctx.newPage(); const caught = {};
+  p.on('response', async r => { const u = r.url(); if (!/partner-api\.tamara\.co\/merchants\//.test(u)) return; try { const j = await r.json(); const k = /invoices/.test(u) ? 'invoices' : /transaction/.test(u) ? 'transactions' : /settlement/.test(u) ? 'settlement' : null; if (k && !caught[k]) caught[k] = j; } catch (e) {} });
+  const go = async (hash, key, ms) => { await p.goto('https://partners.tamara.co/' + hash, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); for (let i = 0; i < (ms || 15000) / 500 && !caught[key]; i++) await p.waitForTimeout(500); };
+  try {
+    await go('#/invoices/list', 'invoices');
+    if (!caught.invoices) { const url = p.url(), t = await p.evaluate(() => document.body.innerText.slice(0, 300)).catch(() => ''); return Object.assign(out, { needLogin: true, err: /login|otp|تحقق|رمز/i.test(url + t) ? 'login' : 'no-data' }); }
+    await go('#/transaction/list', 'transactions'); await go('#/settlement/information', 'settlement');
+    out.ok = true; out.raw = { invoices: Object.keys(caught.invoices || {}), transactions: Object.keys(caught.transactions || {}), settlement: Object.keys(caught.settlement || {}) };
+    // الفواتير: نبحث عن قائمة فيها اسم ملف/روابط
+    const find = (o, d = 0) => { if (!o || d > 4) return null; if (Array.isArray(o) && o.length && typeof o[0] === 'object') return o; for (const v of Object.values(o)) if (typeof v === 'object') { const r = find(v, d + 1); if (r) return r; } return null; };
+    const inv = find(caught.invoices) || []; out.invoices = inv.map(x => { const s = JSON.stringify(x); const name = (s.match(/MonthlyTaxInvoice_\d+|Invoice_\d+/) || [])[0]; const url = (s.match(/"(https?:[^"]+\.(?:pdf|xlsx)[^"]*)"/) || [])[1]; return { name, url, type: /Tax/.test(name || '') ? 'tax' : 'settlement', _: x }; });
+    // الفاتورة الضريبية للفترة المطلوبة: الفاتورة التي فترتها داخل من/إلى (الاسم ينتهي بآخر يوم في الفترة)
+    const want = out.invoices.filter(i => i.type === 'tax' && i.name && (() => { const d = i.name.slice(-8); const iso = d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6); return iso >= from && iso <= to; })());
+    out.taxInvoices = [];
+    for (const i of want) {
+      try {
+        const file = TDIR + '/' + i.name + '.pdf'; const u = i.url;
+        let ok = fs.existsSync(file);
+        if (!ok && u) { const b = await p.evaluate(async u => { const r = await fetch(u, { credentials: 'include' }); if (!r.ok) throw new Error('http ' + r.status); return Array.from(new Uint8Array(await r.arrayBuffer())); }, u).catch(e => null); if (b) { fs.writeFileSync(file, Buffer.from(b)); ok = true; } }
+        const parsed = ok ? tamaraInvoiceParse(await pdfText(file)) : { err: 'no-file' };
+        out.taxInvoices.push(Object.assign({ name: i.name, file: ok ? file : null }, parsed));
+      } catch (e) { out.taxInvoices.push({ name: i.name, err: String(e.message || e).slice(0, 120) }); }
+    }
+    out.fees = out.taxInvoices.reduce((a, i) => a + (i.fees || 0), 0); out.vat = out.taxInvoices.reduce((a, i) => a + (i.vat || 0), 0); out.feesTotal = out.taxInvoices.reduce((a, i) => a + (i.total || 0), 0);
+    // العمليات داخل الفترة
+    const tx = find(caught.transactions) || []; const inRange = tx.filter(t => { const s = JSON.stringify(t); const d = (s.match(/20\d{2}-\d{2}-\d{2}/) || [])[0]; return d && d >= from && d <= to; });
+    out.transactions = { count: inRange.length, totalAll: tx.length, sample: inRange.slice(0, 3) };
+    out.settlement = caught.settlement || null;
+    out.invoices = out.invoices.map(i => ({ name: i.name, type: i.type, hasUrl: !!i.url }));
+  } catch (e) { out.err = String(e.message || e).slice(0, 160); }
+  finally { await p.close().catch(() => {}); }
+  return out;
+}
+// ===== مُجهّز تقرير «حساب»: سلة + بونات + تمارا لفترة، ويكتبه في live/hesab_report =====
 async function buildReport(from, to, label, reqTs) {
   const rep = { at: new Date().toISOString(), from, to, label: label || '', reqTs: reqTs || 0, sources: {} };
   rep.sources.salla = await readSalla(from, to);
   let p; try { p = await ctx.newPage(); await p.goto('https://store.bonat.io/', { waitUntil: 'domcontentloaded', timeout: 30000 }); rep.sources.bonat = await readBonat(p, from, to); } catch (e) { rep.sources.bonat = { ok: false, err: String(e.message || e).slice(0, 120) }; } finally { if (p) await p.close().catch(() => {}); }
+  try { rep.sources.tamara = await readTamara(from, to); } catch (e) { rep.sources.tamara = { ok: false, err: String(e.message || e).slice(0, 120) }; }
   if (GAS && KEY) await gas({ op: 'set', path: 'live/hesab_report', data: rep }).catch(e => console.log('gas', e.message));
   return rep;
 }
@@ -271,6 +324,7 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/salla/status') {   // هل سلة مربوطة؟
     return (async () => { let ok = false, err = null; try { await sallaToken(); ok = true; } catch (e) { err = String(e.message || e); } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ linked: !!(SOAUTH && SOAUTH.refresh), tokenOk: ok, err, hasClientId: !!E.SALLA_CLIENT_ID })); })();
   }
+  if (req.url.startsWith('/tamara')) { return (async () => { const u = new URL(req.url, 'http://x'); const r = prevMonth(); const t = await readTamara(u.searchParams.get('from') || r.from, u.searchParams.get('to') || r.to); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(t, null, 1)); })(); }
   if (req.url.startsWith('/report')) {   // تجهيز تقرير «حساب» عن فترة (سلة + بونات)
     return (async () => {
       try {
