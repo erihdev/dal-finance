@@ -31,12 +31,18 @@ function riyadhToday() {   // تاريخ اليوم بتوقيت الرياض (U
   const d = new Date(Date.now() + 3 * 3600e3);
   return d.toISOString().slice(0, 10);
 }
-async function readBonat(p) {   // قراءة مؤشرات بونات من dashboard-api بالكوكيز المنقولة
-  const day = riyadhToday();
+function prevMonth() {   // الشهر الميلادي السابق بتوقيت الرياض
+  const n = new Date(Date.now() + 3 * 3600e3), y = n.getUTCFullYear(), m = n.getUTCMonth();
+  const s = new Date(Date.UTC(y, m - 1, 1)), e = new Date(Date.UTC(y, m, 0));
+  return { from: s.toISOString().slice(0, 10), to: e.toISOString().slice(0, 10) };
+}
+async function readBonat(p, from, to) {   // قراءة مؤشرات بونات من dashboard-api بالكوكيز المنقولة (من/إلى اختياري، الافتراضي اليوم)
+  const day = from || riyadhToday(), day2 = to || from || riyadhToday();
   try {
-    const stats = await p.evaluate(async (day) => {
+    const stats = await p.evaluate(async (rng) => {
+      const [day, day2] = rng;
       const B = 'https://dashboard-api.bonat.io/api/v5/';
-      const q = '?from=' + day + 'T00:00:00&to=' + day + 'T23:59:59';
+      const q = '?from=' + day + 'T00:00:00&to=' + day2 + 'T23:59:59';
       const m = {
         customers: 'customers/count', newCustomers: 'customers/count-new-customers',
         visits: 'visits/count', totalSale: 'customers/total-sale',
@@ -54,12 +60,47 @@ async function readBonat(p) {   // قراءة مؤشرات بونات من dashb
         } catch (e) {}
       }
       return { okAny, out };
-    }, day).catch(e => ({ err: String(e.message || e).slice(0, 160) }));
+    }, [day, day2]).catch(e => ({ err: String(e.message || e).slice(0, 160) }));
     if (stats && stats.err) return { ok: false, err: stats.err };
     if (!stats || !stats.okAny) return { ok: false, err: 'auth ' + ((stats && stats.out && stats.out.__auth) || '—') };
     delete stats.out.__auth;
-    return { ok: true, stats: Object.assign({ day }, stats.out) };
+    return { ok: true, stats: Object.assign({ day, from: day, to: day2 }, stats.out) };
   } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 160) }; }
+}
+// ===== سلة: قراءة الطلبات عبر Admin API بمفتاح منقول =====
+async function sallaGet(path) {
+  const auth = AUTHH['api.salla.dev']; if (!auth) throw new Error('no-salla-auth');
+  const r = await fetch('https://api.salla.dev' + path, { headers: { Authorization: auth, Accept: 'application/json' } });
+  if (r.status === 401 || r.status === 403) throw new Error('salla-auth-' + r.status);
+  if (!r.ok) throw new Error('salla-' + r.status);
+  return r.json();
+}
+function num(x) { return typeof x === 'number' ? x : (x && typeof x === 'object' && typeof x.amount === 'number' ? x.amount : (parseFloat(x) || 0)); }
+async function readSalla(from, to) {   // ملخص طلبات سلة بين تاريخين YYYY-MM-DD
+  try {
+    const agg = { orders: 0, sales: 0, byStatus: {}, byPayment: {}, refunds: 0, refundAmount: 0, currency: 'SAR', from, to };
+    let page = 1, pages = 1;
+    do {
+      const j = await sallaGet(`/admin/v2/orders?from_date=${from}&to_date=${to}&per_page=50&page=${page}`);
+      const data = j.data || []; const pg = j.pagination || {};
+      pages = pg.totalPages || 1;
+      if (page === 1) agg.orders = pg.total != null ? pg.total : data.length;
+      for (const o of data) {
+        const amt = num(o.amounts && (o.amounts.total || o.amounts.sub_total)) || num(o.total) || num(o.amount);
+        agg.sales += amt;
+        const st = (o.status && (o.status.slug || o.status.name)) || o.status || 'unknown';
+        agg.byStatus[st] = (agg.byStatus[st] || 0) + 1;
+        const pm = (o.payment_method && (o.payment_method.name || o.payment_method)) || o.payment_method || 'unknown';
+        agg.byPayment[pm] = (agg.byPayment[pm] || 0) + 1;
+        const refunded = num(o.amounts && o.amounts.refunded);
+        if (refunded) { agg.refunds++; agg.refundAmount += refunded; }
+        const cur = (o.amounts && o.amounts.total && o.amounts.total.currency) || o.currency; if (cur) agg.currency = cur;
+      }
+      page++;
+    } while (page <= pages && page <= 60);
+    agg.sales = Math.round(agg.sales * 100) / 100; agg.refundAmount = Math.round(agg.refundAmount * 100) / 100;
+    return { ok: true, stats: agg };
+  } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 120) }; }
 }
 async function readSite(s) {
   const p = await ctx.newPage();
@@ -111,8 +152,9 @@ async function launch() {
   console.log('browser up');
 }
 // استيراد جلسات الدخول من إضافة كروم (كوكيز + تخزين المتصفح) — لا كلمات مرور
-const fs = require('fs'); const SFILE = '/data/session_storage.json';
+const fs = require('fs'); const SFILE = '/data/session_storage.json', AFILE = '/data/auth_headers.json';
 let SSTORE = {}; try { SSTORE = JSON.parse(fs.readFileSync(SFILE, 'utf8')); } catch (e) {}
+let AUTHH = {}; try { AUTHH = JSON.parse(fs.readFileSync(AFILE, 'utf8')); } catch (e) {}   // host -> "Bearer ..." (مفاتيح واجهات مثل سلة)
 async function refreshInject() {   // نحقن تخزين الجلسة في كل صفحة من نفس الموقع (sessionStorage يضيع مع إغلاق التبويب)
   if (!ctx || !Object.keys(SSTORE).length) return;
   await ctx.addInitScript(all => {
@@ -156,7 +198,9 @@ function importSessions(req, res) {
         if (k === 'bonat') { const now = (await ctx.cookies('https://store.bonat.io')).map(c => c.name); console.log('bonat sent', cookies.map(c => c.name + (c.url ? '@host' : '@' + c.domain) + ':' + c.expires).join(' '), '| now', now.join(',')); }
         out[k] = { cookies: added, of: cookies.length, storage: st };
       }
+      for (const [host, val] of Object.entries(j.authHeaders || {})) { if (val && /^bearer /i.test(val)) { AUTHH[host] = val; out['auth:' + host] = 'ok'; } }
       try { fs.writeFileSync(SFILE, JSON.stringify(SSTORE)); } catch (e) {}
+      try { fs.writeFileSync(AFILE, JSON.stringify(AUTHH)); } catch (e) {}
       await refreshInject();
       lastView = 0; setTimeout(() => poll(true), 3000);
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, out }));
@@ -182,6 +226,30 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
   if (req.method === 'POST' && req.url === '/import') return importSessions(req, res);
   if (req.url === '/poll') { poll(true); res.writeHead(200); return res.end('ok'); }
+  if (req.url === '/salladiag') {   // تشخيص مؤقت: بنية رد سلة (مفاتيح فقط، بلا بيانات عملاء)
+    return (async () => {
+      try {
+        const j = await sallaGet('/admin/v2/orders?per_page=1&page=1');
+        const o = (j.data || [])[0] || {};
+        const safe = {}; for (const k of Object.keys(o)) { const v = o[k]; safe[k] = (v && typeof v === 'object') ? (Array.isArray(v) ? 'arr' + v.length : Object.keys(v).slice(0, 10)) : typeof v; }
+        const amounts = o.amounts && typeof o.amounts === 'object' ? Object.fromEntries(Object.entries(o.amounts).slice(0, 12).map(([k, v]) => [k, v && typeof v === 'object' ? Object.keys(v) : typeof v])) : null;
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ pagination: j.pagination || null, keys: safe, amounts }, null, 1));
+      } catch (e) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ err: String(e.message || e) })); }
+    })();
+  }
+  if (req.url.startsWith('/report')) {   // تجهيز تقرير «حساب» عن فترة: سلة + بونات (الكاشير لاحقًا)
+    return (async () => {
+      try {
+        const u = new URL(req.url, 'http://x'); let from = u.searchParams.get('from'), to = u.searchParams.get('to');
+        if (!from || !to) { const r = prevMonth(); from = r.from; to = r.to; }
+        const rep = { at: new Date().toISOString(), from, to, sources: {} };
+        rep.sources.salla = await readSalla(from, to);
+        let p; try { p = await ctx.newPage(); await p.goto('https://store.bonat.io/', { waitUntil: 'domcontentloaded', timeout: 30000 }); rep.sources.bonat = await readBonat(p, from, to); } catch (e) { rep.sources.bonat = { ok: false, err: String(e.message || e).slice(0, 120) }; } finally { if (p) await p.close().catch(() => {}); }
+        if (GAS && KEY) await gas({ op: 'set', path: 'live/hesab_report', data: rep }).catch(e => console.log('gas', e.message));
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(rep, null, 1));
+      } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); }
+    })();
+  }
   proxy.web(req, res);
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
