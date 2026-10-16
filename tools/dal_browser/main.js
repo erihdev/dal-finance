@@ -303,6 +303,69 @@ async function checkReportReq() {   // التطبيق يكتب live/report_req �
     const q = d && d.data; if (q && q.ts && q.ts !== lastReqTs && q.from && q.to) { lastReqTs = q.ts; await buildReport(q.from, q.to, q.label || '', q.ts); }
   } catch (e) { } finally { reportBusy = false; }
 }
+
+// ===== العملاء: سحب كل عملاء بونات (بالجلسة) وسلة (بالواجهة الرسمية) إلى live/cust_* للتطبيق =====
+const CHUNK = 7000;
+function d10(x) { return x ? String(x).slice(0, 10) : ''; }
+async function syncBonatCustomers() {
+  const p = await ctx.newPage(); const out = { ok: false, n: 0, rows: [], segments: {} };
+  try {
+    await p.goto('https://store.bonat.io/customers', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    let page = 1, limit = 500, totalPages = 1;
+    while (page <= totalPages && page < 400) {
+      const r = await p.evaluate(async ([page, limit]) => {
+        const u = 'https://dashboard-api.bonat.io/api/v3/customers?page=' + page + '&limit=' + limit + '&sort=' + encodeURIComponent('[{"lastVisit":"DESC"}]');
+        const r = await fetch(u, { credentials: 'include', headers: { Accept: 'application/json' } });
+        const j = await r.json().catch(() => ({})); return { status: r.status, totalPages: j.totalPages, totalDocs: j.totalDocs, data: (j.data || []).map(c => [c.name || '', String(c.dialCode || '') + String(c.phoneNumber || ''), c.visitsCount || 0, c.pointsCount || 0, c.lastVisit ? String(c.lastVisit).slice(0, 10) : '', c.registeredSince ? String(c.registeredSince).slice(0, 10) : '', (c.segmentObj && (c.segmentObj.nameAr || c.segmentObj.nameEn)) || '', c.email || '', c.gender || '', c.birthday ? String(c.birthday).slice(0, 10) : '', c.rewardsRedeemed || 0]) };
+      }, [page, limit]);
+      if (r.status === 401 || r.status === 403) { out.needLogin = true; out.err = 'login'; return out; }
+      if (r.status !== 200) { if (limit > 100) { limit = 100; continue; } out.err = 'http ' + r.status; return out; }
+      totalPages = +r.totalPages || 1; out.total = +r.totalDocs || 0;
+      for (const row of r.data) { out.rows.push(row); out.segments[row[6] || '?'] = (out.segments[row[6] || '?'] || 0) + 1; }
+      page++;
+    }
+    out.n = out.rows.length; out.ok = out.n > 0;
+  } catch (e) { out.err = String(e.message || e).slice(0, 160); }
+  finally { await p.close().catch(() => {}); }
+  return out;
+}
+async function syncSallaCustomers() {
+  const out = { ok: false, n: 0, rows: [] };
+  try {
+    let page = 1, pages = 1;
+    while (page <= pages && page < 300) {
+      const j = await sallaApi('/admin/v2/customers?per_page=50&page=' + page);
+      const pg = j.pagination || {}; pages = +pg.totalPages || +pg.total_pages || 1;
+      for (const c of (j.data || [])) out.rows.push([(c.full_name || ((c.first_name || '') + ' ' + (c.last_name || ''))).trim(), String(c.mobile_code || '').replace('+', '') + String(c.mobile || ''), c.email || '', (c.city || ''), d10(c.updated_at && (c.updated_at.date || c.updated_at)), c.id, (c.groups || []).map(g => g.name || g).join('،')]);
+      page++;
+    }
+    out.n = out.rows.length; out.ok = true;
+  } catch (e) { out.err = String(e.message || e).slice(0, 160); }
+  return out;
+}
+let custBusy = false;
+async function syncCustomers() {
+  if (custBusy || !ctx || !GAS || !KEY) return { err: 'busy' }; custBusy = true;
+  const meta = { at: new Date().toISOString(), bonat: {}, salla: {} };
+  try {
+    const b = await syncBonatCustomers(); meta.bonat = { ok: b.ok, n: b.n, total: b.total || 0, err: b.err || null, needLogin: !!b.needLogin, segments: b.segments || {} };
+    if (b.ok) { const chunks = []; for (let i = 0; i < b.rows.length; i += CHUNK) chunks.push(b.rows.slice(i, i + CHUNK));
+      for (let i = 0; i < chunks.length; i++) await gas({ op: 'set', path: 'live/cust_bonat_' + (i + 1), data: { at: meta.at, i: i + 1, of: chunks.length, cols: ['name', 'phone', 'visits', 'points', 'lastVisit', 'since', 'segment', 'email', 'gender', 'birthday', 'rewards'], rows: chunks[i] } });
+      meta.bonat.chunks = chunks.length; }
+    const sl = await syncSallaCustomers(); meta.salla = { ok: sl.ok, n: sl.n, err: sl.err || null };
+    if (sl.ok) await gas({ op: 'set', path: 'live/cust_salla', data: { at: meta.at, cols: ['name', 'phone', 'email', 'city', 'updated', 'id', 'groups'], rows: sl.rows } });
+    await gas({ op: 'set', path: 'live/cust_meta', data: meta });
+    console.log('customers', JSON.stringify({ b: meta.bonat.n, s: meta.salla.n }));
+  } catch (e) { meta.err = String(e.message || e).slice(0, 160); }
+  finally { custBusy = false; }
+  return meta;
+}
+let lastCustReq = 0;
+async function checkCustReq() {   // التطبيق يكتب live/cust_req فنحدّث القوائم
+  if (custBusy || !ctx || !GAS || !KEY) return;
+  try { const r = await gas({ op: 'get', paths: ['live/cust_req'] }); const d = r.docs && r.docs['live/cust_req']; const q = d && d.data; if (q && q.ts && q.ts !== lastCustReq) { lastCustReq = q.ts; await syncCustomers(); } } catch (e) { }
+}
+function dailyAt(h, fn) { const t = () => { const n = new Date(Date.now() + 3 * 3600e3); const ms = ((24 + h - n.getUTCHours() - 1) % 24) * 3600e3 + (60 - n.getUTCMinutes()) * 60e3; setTimeout(() => { fn(); t(); }, ms); }; t(); }
 // العرض عن بُعد خلف كلمة مرور
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:6080', ws: true });
 proxy.on('error', () => {});
@@ -339,6 +402,19 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/salla/status') {   // هل سلة مربوطة؟
     return (async () => { let ok = false, err = null; try { await sallaToken(); ok = true; } catch (e) { err = String(e.message || e); } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ linked: !!(SOAUTH && SOAUTH.refresh), tokenOk: ok, err, hasClientId: !!E.SALLA_CLIENT_ID })); })();
   }
+
+  if (req.url.startsWith('/probe')) {   // فحص: أي واجهات تناديها صفحة ما (عناوين فقط + مفاتيح الرد، بلا قيم)
+    return (async () => {
+      const u = new URL(req.url, 'http://x'); const target = u.searchParams.get('u'); const pat = new RegExp(u.searchParams.get('p') || 'api');
+      const seen = []; const p = await ctx.newPage();
+      p.on('response', async r => { const ru = r.url(); if (!pat.test(ru)) return; let keys = null, sample = null; try { const j = await r.json(); keys = Object.keys(j || {}); const arr = Array.isArray(j) ? j : (j && (j.data || j.result || j.items)); const first = Array.isArray(arr) ? arr[0] : (arr && Array.isArray(arr.data) ? arr.data[0] : arr && Array.isArray(arr.items) ? arr.items[0] : null); if (first && typeof first === 'object') sample = Object.keys(first); if (arr && !Array.isArray(arr) && typeof arr === 'object') keys.push('data:' + Object.keys(arr).join('|')); } catch (e) {} seen.push({ url: ru.replace(/([?&])(token|key|auth)[^&]*/gi, '$1***'), status: r.status(), method: r.request().method(), keys, sample }); });
+      try { await p.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 }); await p.waitForTimeout(+u.searchParams.get('w') || 8000); } catch (e) { seen.push({ err: String(e.message || e).slice(0, 100) }); } finally { await p.close().catch(() => {}); }
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(seen, null, 1));
+    })();
+  }
+  if (req.url.startsWith('/customers/sync')) { return (async () => { const m = await syncCustomers(); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(m, null, 1)); })(); }
+  if (req.url.startsWith('/salla/try')) { return (async () => { const u = new URL(req.url, 'http://x'); let o = {}; try { const tok = await sallaToken(); const r = await fetch('https://api.salla.dev' + u.searchParams.get('path'), { headers: { Authorization: 'Bearer ' + tok, Accept: 'application/json' } }); o = { status: r.status, body: (await r.text()).slice(0, 600) }; } catch (e) { o = { err: String(e.message || e) }; } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); })(); }
+  if (req.url.startsWith('/bonat/one')) { return (async () => { const p = await ctx.newPage(); let o = {}; try { await p.goto('https://store.bonat.io/customers', { waitUntil: 'domcontentloaded', timeout: 30000 }); o = await p.evaluate(async () => { const r = await fetch('https://dashboard-api.bonat.io/api/v3/customers?page=1&limit=3&sort=' + encodeURIComponent('[{"lastVisit":"DESC"}]'), { credentials: 'include', headers: { Accept: 'application/json' } }); const j = await r.json(); const c = (j.data || [])[0] || {}; const mask = v => typeof v === 'string' ? v.replace(/[0-9]/g, '#').replace(/[^\s#@.\-:]/g, 'x') : v; const o = {}; for (const [k, v] of Object.entries(c)) o[k] = typeof v === 'object' && v ? v : mask(v); return o; }); } catch (e) { o = { err: String(e.message || e) }; } finally { await p.close().catch(() => {}); } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o, null, 1)); })(); }
   if (req.url.startsWith('/tamara')) { return (async () => { const u = new URL(req.url, 'http://x'); const r = prevMonth(); const t = await readTamara(u.searchParams.get('from') || r.from, u.searchParams.get('to') || r.to); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(t, null, 1)); })(); }
   if (req.url.startsWith('/report')) {   // تجهيز تقرير «حساب» عن فترة (سلة + بونات)
     return (async () => {
@@ -354,4 +430,4 @@ const srv = http.createServer((req, res) => {
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setInterval(checkReportReq, 20e3); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setInterval(checkReportReq, 20e3); setInterval(checkCustReq, 30e3); dailyAt(4, syncCustomers); }).catch(e => { console.error(e); process.exit(1); });

@@ -81,7 +81,41 @@ async function flush() {
 async function seed() {
   try { const r = await gas({ op: 'get', paths: ['live/wa_live'] }); const d = r.docs['live/wa_live']; if (d && d.data && Array.isArray(d.data.msgs)) buf = d.data.msgs; } catch (e) { lastErr = 'seed ' + e.message; }
 }
+
+// عملاء الواتس: كل محادثة فردية (لا مجموعات ولا المستبعَدين) من WAHA → live/cust_wa مرة يوميًا وعند الطلب
+let waBusy = false, lastCustReq = 0;
+async function syncWaCustomers() {
+  if (waBusy) return; waBusy = true;
+  try {
+    const rows = []; const seen = new Set();
+    let chats = [];
+    try { chats = await waha(`/api/${SESSION}/chats/overview?limit=5000&offset=0`); } catch (e) { try { chats = await waha(`/api/${SESSION}/chats?limit=5000&offset=0`); } catch (e2) { } }
+    for (const c of (chats || [])) {
+      let id = String(c.id && (c.id._serialized || c.id) || ''); if (!id || /@g\.us|@newsletter|@broadcast|status@/.test(id)) continue;
+      id = await pnOf(id); const ph = digits(id); if (!ph) continue;
+      const name = c.name || c.pushname || (c.lastMessage && c.lastMessage._data && c.lastMessage._data.notifyName) || '';
+      if (EXCLUDE.some(x => x === name || x === ph)) continue;
+      const lm = c.lastMessage || {}; const t = lm.timestamp ? new Date((+lm.timestamp) * 1000).toISOString().slice(0, 10) : '';
+      if (seen.has(ph)) continue; seen.add(ph);
+      rows.push([name, ph, t, lm.fromMe ? 1 : 0]);
+    }
+    let contacts = [];
+    try { contacts = await waha(`/api/contacts/all?session=${SESSION}&limit=10000`); } catch (e) { }
+    for (const k of (contacts || [])) {
+      const id = String(k.id && (k.id._serialized || k.id) || ''); if (/@g\.us|@lid/.test(id)) continue; const ph = digits(id); if (!ph || seen.has(ph)) continue;
+      const name = k.name || k.pushname || k.pushName || ''; if (!name || EXCLUDE.some(x => x === name || x === ph)) continue;
+      seen.add(ph); rows.push([name, ph, '', 0]);
+    }
+    rows.sort((a, b) => String(b[2]).localeCompare(String(a[2])));
+    await gas({ op: 'set', path: 'live/cust_wa', data: { at: new Date().toISOString(), n: rows.length, cols: ['name', 'phone', 'last', 'lastMe'], rows } });
+    console.log('wa customers', rows.length);
+  } catch (e) { lastErr = 'cust ' + e.message; }
+  finally { waBusy = false; }
+}
+async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['live/cust_req'] }); const d = r.docs && r.docs['live/cust_req']; const q = d && d.data; if (q && q.ts && q.ts !== lastCustReq) { lastCustReq = q.ts; await syncWaCustomers(); } } catch (e) { } }
+setInterval(checkCustReq, 30000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
 const srv = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status() })); }
   if (req.method !== 'POST' || !req.url.startsWith('/hook')) { res.writeHead(404); return res.end(); }
   if (SECRET && req.headers['x-relay-secret'] !== SECRET) { res.writeHead(401); return res.end(); }
