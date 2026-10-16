@@ -81,11 +81,15 @@ function importSessions(req, res) {
       if (!ctx) throw new Error('المتصفح يعيد التشغيل، جرّب بعد دقيقة');
       const j = JSON.parse(b || '{}');
       for (const [k, site] of Object.entries(j.sites || {})) {
-        const cookies = (site.cookies || []).filter(c => c.name && c.domain).map(c => ({
-          name: c.name, value: c.value || '', domain: c.domain, path: c.path || '/', httpOnly: !!c.httpOnly, secure: !!c.secure,
-          sameSite: SS[c.sameSite] || 'Lax', expires: c.session || !c.expirationDate ? -1 : Math.floor(c.expirationDate) }))
-          .map(c => (c.sameSite === 'None' && !c.secure ? Object.assign(c, { sameSite: 'Lax' }) : c));
-        if (cookies.length) await ctx.addCookies(cookies);
+        const cookies = (site.cookies || []).filter(c => c.name && c.domain).map(c => {
+          const o = { name: c.name, value: c.value || '', httpOnly: !!c.httpOnly, secure: !!c.secure || /^__(Host|Secure)-/.test(c.name),
+            sameSite: SS[c.sameSite] || 'Lax', expires: c.session || !c.expirationDate ? -1 : Math.floor(c.expirationDate) };
+          if (c.hostOnly || /^__Host-/.test(c.name)) o.url = 'https://' + c.domain.replace(/^\./, '') + (c.path || '/');   // كوكي خاص بالنطاق نفسه
+          else { o.domain = c.domain; o.path = c.path || '/'; }
+          if (o.sameSite === 'None' && !o.secure) o.sameSite = 'Lax';
+          return o; });
+        let added = 0;
+        for (const ck of cookies) { try { await ctx.addCookies([ck]); added++; } catch (e) { console.log('cookie', k, ck.name, e.message.slice(0, 120)); } }
         let st = 0;
         for (const [origin, data] of Object.entries(site.storage || {})) SSTORE[origin] = data;
         for (const [origin, data] of Object.entries(site.storage || {})) {
@@ -96,7 +100,7 @@ function importSessions(req, res) {
             st++;
           } catch (e) { } finally { await p.close().catch(() => {}); }
         }
-        out[k] = { cookies: cookies.length, storage: st };
+        out[k] = { cookies: added, of: cookies.length, storage: st };
       }
       try { fs.writeFileSync(SFILE, JSON.stringify(SSTORE)); } catch (e) {}
       await refreshInject();
