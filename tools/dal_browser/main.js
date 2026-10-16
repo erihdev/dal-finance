@@ -409,6 +409,44 @@ async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BO
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
   return { file: out, n: items.length, total: items.reduce((a, x) => a + (+x.total || 0), 0), vat: items.reduce((a, x) => a + (+x.vat || 0), 0) };
 }
+
+// ===== بوابة الموظفين: حسابات برموز PIN وصلاحيات لكل صفحة (يشوف/يعدّل)، تُفرض هنا على الخادم لا في المتصفح =====
+const crypto2 = require('crypto');
+const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'] };
+const loginHits = new Map();   // ip -> [timestamps]
+function staffToken(id, exp) { return id + '.' + exp + '.' + crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40); }
+function staffVerify(tok) { const [id, exp, sig] = String(tok || '').split('.'); if (!id || !exp || !sig) return null; if (+exp < Date.now()) return null; const ok = crypto2.timingSafeEqual(Buffer.from(sig), Buffer.from(crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40))); return ok ? id : null; }
+async function staffList() { try { const r = await gas({ op: 'get', paths: ['live/staff'] }); const d = r.docs && r.docs['live/staff']; return (d && d.data && Array.isArray(d.data.users)) ? d.data.users : []; } catch (e) { return []; } }
+async function staffLog(who, action, detail) { try { const r = await gas({ op: 'get', paths: ['live/staff_log'] }); const d = r.docs && r.docs['live/staff_log']; const L = (d && d.data && Array.isArray(d.data.items)) ? d.data.items : []; L.unshift({ t: new Date().toISOString(), who, action, detail: String(detail || '').slice(0, 160) }); await gas({ op: 'set', path: 'live/staff_log', data: { at: new Date().toISOString(), items: L.slice(0, 500) } }); } catch (e) {} }
+function sha(s) { return crypto2.createHash('sha256').update(s).digest('hex'); }
+async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترجع true إذا عالجت الطلب
+  cors(req, res);
+  const u = new URL(req.url, 'http://x'); const path = u.pathname; const json = (code, o) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(o)); };
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
+  if (path === '/staff/login' && req.method === 'POST') {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || ''; const now = Date.now(); const h = (loginHits.get(ip) || []).filter(t => now - t < 3600e3); if (h.length >= 12) return json(429, { ok: false, err: 'محاولات كثيرة، انتظر ساعة' }); h.push(now); loginHits.set(ip, h);
+    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); const users = await staffList(); const uu = users.find(x => x.id === j.id && x.active !== false); if (!uu || !j.pin || sha(uu.salt + ':' + String(j.pin)) !== uu.pin) return json(401, { ok: false, err: 'الرمز غير صحيح' });
+      const exp = now + 30 * 864e5; await staffLog(uu.name, 'login', ''); return json(200, { ok: true, token: staffToken(uu.id, exp), user: { id: uu.id, name: uu.name, roles: uu.roles || {} } }); } catch (e) { return json(400, { ok: false, err: 'bad' }); }
+  }
+  if (path === '/staff/users' && req.method === 'GET') { const users = await staffList(); return json(200, { ok: true, users: users.filter(x => x.active !== false).map(x => ({ id: x.id, name: x.name })) }); }   // أسماء فقط لشاشة الدخول
+  const id = staffVerify((req.headers.authorization || '').replace(/^Bearer /i, '')); if (!id) return json(401, { ok: false, err: 'login' });
+  const users = await staffList(); const me = users.find(x => x.id === id && x.active !== false); if (!me) return json(401, { ok: false, err: 'disabled' });
+  const roles = me.roles || {}; const can = (page, lvl) => roles[page] === 'edit' || (lvl === 'view' && roles[page] === 'view');
+  if (path === '/staff/me') return json(200, { ok: true, user: { id: me.id, name: me.name, roles } });
+  if (path === '/staff/docs' && req.method === 'GET') {   // قراءة المستندات المسموحة فقط
+    const want = String(u.searchParams.get('names') || '').split(',').filter(Boolean); const allowed = new Set(); for (const [pg, docs] of Object.entries(STAFF_PAGES)) if (can(pg, 'view')) docs.forEach(d => allowed.add(d));
+    const names = want.filter(n => allowed.has(n)); if (!names.length) return json(403, { ok: false, err: 'forbidden' });
+    try { const r = await gas({ op: 'get', paths: names.map(n => 'live/' + n) }); const out = {}; for (const n of names) { const d = r.docs && r.docs['live/' + n]; out[n] = d ? d.data : null; } if (out.crm_state) out.crm_state = { tpl: out.crm_state.tpl || {}, opt: out.crm_state.opt || {}, tag: out.crm_state.tag || {}, sent: out.crm_state.sent || {} }; return json(200, { ok: true, docs: out }); } catch (e) { return json(500, { ok: false, err: 'db' }); }
+  }
+  if (path === '/staff/invoice/upload' && req.method === 'POST') { if (!can('invoices', 'edit')) return json(403, { ok: false, err: 'forbidden' });
+    try { const b = JSON.parse(await readBody(req, 25e6) || '{}'); b.meta = Object.assign({}, b.meta || {}, { src: 'staff', from: me.name }); const r = await fetch(RELAY + '/invoice/process', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': KEY }, body: JSON.stringify(b) }); const t = await r.text(); let rec = null; try { rec = JSON.parse(t).rec; } catch (e) {} await staffLog(me.name, 'invoice', rec ? (rec.supplier || '') + ' ' + (rec.total || '') + ' ' + rec.status : 'upload'); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(t); } catch (e) { json(500, { ok: false, err: String(e.message || e) }); } return true; }
+  if (path === '/staff/stock' && req.method === 'POST') { if (!can('stock', 'edit')) return json(403, { ok: false, err: 'forbidden' });
+    try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); const r = await gas({ op: 'get', paths: ['live/stock_state'] }); const d = r.docs && r.docs['live/stock_state']; const st = Object.assign({ q: {}, st: {}, n: {} }, (d && d.data) || {}); if (j.st) st.st[j.id] = j.st; if (j.q != null) st.q[j.id] = j.q; if (j.n != null) st.n[j.id] = j.n; st.at = new Date().toISOString(); st.by = me.name; await gas({ op: 'set', path: 'live/stock_state', data: st }); await staffLog(me.name, 'stock', (j.id || '') + ' → ' + (j.st || '') + (j.q != null ? ' / ' + j.q : '')); return json(200, { ok: true }); } catch (e) { return json(500, { ok: false, err: 'db' }); } }
+  if (path === '/staff/sent' && req.method === 'POST') { if (!can('messages', 'edit')) return json(403, { ok: false, err: 'forbidden' });
+    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); const r = await gas({ op: 'get', paths: ['live/crm_state'] }); const d = r.docs && r.docs['live/crm_state']; const st = Object.assign({ sent: {}, opt: {}, tag: {}, note: {}, tpl: {} }, (d && d.data) || {}); (st.sent[j.k] = st.sent[j.k] || {})[j.t || 'generic'] = new Date().toISOString().slice(0, 10); await gas({ op: 'set', path: 'live/crm_state', data: st }); await staffLog(me.name, 'message', (j.name || j.k) + ' · ' + (j.t || '')); return json(200, { ok: true }); } catch (e) { return json(500, { ok: false, err: 'db' }); } }
+  if (path === '/staff/log' && req.method === 'POST') { try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); await staffLog(me.name, String(j.action || 'note').slice(0, 30), j.detail); return json(200, { ok: true }); } catch (e) { return json(400, { ok: false }); } }
+  return json(404, { ok: false, err: 'no' });
+}
 // العرض عن بُعد خلف كلمة مرور
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:6080', ws: true });
 proxy.on('error', () => {});
@@ -438,6 +476,7 @@ const srv = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/invoice/ingest') {   // من الناقل: ملف + سجل مفحوص (محمي بمفتاح)
     return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const j = JSON.parse(await readBody(req, 25e6) || '{}'); const rec = j.rec; if (!rec || !rec.id) throw new Error('bad'); if (j.b64) fs.writeFileSync(invFile(rec), Buffer.from(j.b64, 'base64')); await invIndexAdd(rec); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
   }
+  if (req.url.startsWith('/staff/')) { staffRoute(req, res).catch(() => { try { res.writeHead(500); res.end(); } catch (e) {} }); return; }
   if (req.method === 'OPTIONS') { cors(req, res); res.writeHead(204); return res.end(); }
   if (!authed(req)) {
     if (req.url === '/import') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, err: 'الرمز غير صحيح' })); }   // بلا نافذة دخول حتى لا تعلق الإضافة
