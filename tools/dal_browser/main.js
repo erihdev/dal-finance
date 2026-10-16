@@ -68,49 +68,51 @@ async function readBonat(p, from, to) {   // قراءة مؤشرات بونات 
   } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 160) }; }
 }
 // ===== سلة: قراءة الطلبات عبر Admin API بمفتاح منقول =====
-// قراءة سلة من داخل صفحة مُصادَقة (تستخدم مفتاح اللوحة الحيّ المتجدّد، لا مفتاحًا منقولًا ينتهي)
-async function sallaInPage(from, to, diag) {
-  const p = await ctx.newPage();
-  let liveHeaders = null, spaStatus = 0;   // نلتقط ترويسات اللوحة الكاملة وحالة طلبها الحقيقي
-  p.on('request', r => { try { if (/api\.salla\.dev\/admin/.test(r.url())) { const h = r.headers(); if (h.authorization && /^bearer /i.test(h.authorization) && !liveHeaders) liveHeaders = h; } } catch (e) {} });
-  p.on('response', r => { try { if (/api\.salla\.dev\/admin\/v2\/orders/.test(r.url()) && !spaStatus) spaStatus = r.status(); } catch (e) {} });
-  try {
-    await p.goto('https://s.salla.sa/orders', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    for (let i = 0; i < 24 && !liveHeaders; i++) await p.waitForTimeout(700);   // ننتظر حتى تُصدر اللوحة طلبًا يحمل الترويسات
-    await p.waitForTimeout(2000);
-    // ترويسات نظيفة قابلة لإعادة الاستخدام (نحذف ما يمنعه المتصفح)
-    const reuse = {}; for (const [k, v] of Object.entries(liveHeaders || {})) { if (!/^(host|content-length|connection|accept-encoding|cookie|:.*)/i.test(k)) reuse[k] = v; }
-    reuse.Accept = 'application/json';
-    return await p.evaluate(async (arg) => {
-      const [from, to, diag, reuse, spaStatus] = arg;
-      const H = Object.assign({}, reuse);
-      const get = async path => { try { const r = await fetch('https://api.salla.dev' + path, { headers: H }); return { s: r.status, j: r.status === 200 ? await r.json() : null }; } catch (e) { return { s: -1, err: String(e.message || e).slice(0, 80) }; } };
-      if (diag) { const r = await get('/admin/v2/orders?per_page=1&page=1'); const o = (r.j && r.j.data || [])[0] || {}; const keys = {}; for (const k of Object.keys(o)) keys[k] = (o[k] && typeof o[k] === 'object') ? (Array.isArray(o[k]) ? 'arr' : Object.keys(o[k]).slice(0, 10)) : typeof o[k]; return { myStatus: r.s, spaStatus, err: r.err, url: location.href, title: document.title.slice(0, 60), txt: (document.body ? document.body.innerText : '').slice(0, 220).replace(/\n+/g, ' | '), hdrKeys: Object.keys(reuse), pagination: r.j && r.j.pagination, keys, amounts: o.amounts && typeof o.amounts === 'object' ? Object.keys(o.amounts) : null }; }
-      const num = x => typeof x === 'number' ? x : (x && typeof x === 'object' && typeof x.amount === 'number' ? x.amount : (parseFloat(x) || 0));
-      const agg = { orders: 0, sales: 0, byStatus: {}, byPayment: {}, refunds: 0, refundAmount: 0, currency: 'SAR', from, to, status: 0 };
-      let page = 1, pages = 1;
-      do {
-        const r = await get(`/admin/v2/orders?from_date=${from}&to_date=${to}&per_page=50&page=${page}`);
-        agg.status = r.s; if (r.s !== 200 || !r.j) break;
-        const data = r.j.data || [], pg = r.j.pagination || {}; pages = pg.totalPages || 1;
-        if (page === 1) agg.orders = pg.total != null ? pg.total : data.length;
-        for (const o of data) {
-          agg.sales += num(o.amounts && (o.amounts.total || o.amounts.sub_total)) || num(o.total) || num(o.amount);
-          const st = (o.status && (o.status.slug || o.status.name)) || o.status || 'unknown'; agg.byStatus[st] = (agg.byStatus[st] || 0) + 1;
-          const pm = (o.payment_method && (o.payment_method.name || o.payment_method)) || o.payment_method || 'unknown'; agg.byPayment[pm] = (agg.byPayment[pm] || 0) + 1;
-          const rf = num(o.amounts && o.amounts.refunded); if (rf) { agg.refunds++; agg.refundAmount += rf; }
-          const cur = (o.amounts && o.amounts.total && o.amounts.total.currency) || o.currency; if (cur) agg.currency = cur;
-        }
-        page++;
-      } while (page <= pages && page <= 60);
-      agg.sales = Math.round(agg.sales * 100) / 100; agg.refundAmount = Math.round(agg.refundAmount * 100) / 100;
-      return agg;
-    }, [from, to, !!diag, reuse, spaStatus]);
-  } finally { await p.close().catch(() => {}); }
+// ===== سلة عبر OAuth الرسمي (توكن خادمي دائم؛ لا متصفح ولا Cloudflare) =====
+const SOFILE = '/data/salla_oauth.json';
+let SOAUTH = {}; try { SOAUTH = JSON.parse(fs.readFileSync(SOFILE, 'utf8')); } catch (e) {}
+let sallaRefreshing = null;
+async function sallaExchange(params) {
+  const body = new URLSearchParams(Object.assign({ client_id: E.SALLA_CLIENT_ID || '', client_secret: E.SALLA_CLIENT_SECRET || '' }, params));
+  const r = await fetch('https://accounts.salla.sa/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, body });
+  const j = await r.json().catch(() => ({})); if (!r.ok || !j.access_token) throw new Error('salla-token-' + r.status + ' ' + (j.error || ''));
+  SOAUTH = { access: j.access_token, refresh: j.refresh_token || SOAUTH.refresh, exp: Date.now() + (+j.expires_in || 1209600) * 1000, at: Date.now() };
+  try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); } catch (e) {}
+  return SOAUTH;
 }
-async function readSalla(from, to) {
-  try { const a = await sallaInPage(from, to, false); if (!a || a.status !== 200) return { ok: false, err: 'salla ' + (a && a.status) }; return { ok: true, stats: a }; }
-  catch (e) { return { ok: false, err: String(e.message || e).slice(0, 120) }; }
+async function sallaToken() {
+  if (SOAUTH.access && SOAUTH.exp - 120000 > Date.now()) return SOAUTH.access;
+  if (!SOAUTH.refresh) throw new Error('salla-not-linked');
+  if (!sallaRefreshing) sallaRefreshing = sallaExchange({ grant_type: 'refresh_token', refresh_token: SOAUTH.refresh }).finally(() => { sallaRefreshing = null; });
+  await sallaRefreshing; return SOAUTH.access;
+}
+async function sallaApi(path) {
+  const tok = await sallaToken();
+  const r = await fetch('https://api.salla.dev' + path, { headers: { Authorization: 'Bearer ' + tok, Accept: 'application/json' } });
+  if (!r.ok) throw new Error('salla-api-' + r.status);
+  return r.json();
+}
+function num(x) { return typeof x === 'number' ? x : (x && typeof x === 'object' && typeof x.amount === 'number' ? x.amount : (parseFloat(x) || 0)); }
+async function readSalla(from, to) {   // ملخص طلبات سلة بين تاريخين YYYY-MM-DD عبر الواجهة الرسمية
+  try {
+    const agg = { orders: 0, sales: 0, byStatus: {}, byPayment: {}, refunds: 0, refundAmount: 0, currency: 'SAR', from, to };
+    let page = 1, pages = 1;
+    do {
+      const j = await sallaApi(`/admin/v2/orders?from_date=${from}&to_date=${to}&per_page=50&page=${page}`);
+      const data = j.data || [], pg = j.pagination || {}; pages = pg.totalPages || 1;
+      if (page === 1) agg.orders = pg.total != null ? pg.total : data.length;
+      for (const o of data) {
+        agg.sales += num(o.amounts && (o.amounts.total || o.amounts.sub_total)) || num(o.total) || num(o.amount);
+        const st = (o.status && (o.status.slug || o.status.name)) || o.status || 'unknown'; agg.byStatus[st] = (agg.byStatus[st] || 0) + 1;
+        const pm = (o.payment_method && (o.payment_method.name || o.payment_method)) || o.payment_method || 'unknown'; agg.byPayment[pm] = (agg.byPayment[pm] || 0) + 1;
+        const rf = num(o.amounts && o.amounts.refunded); if (rf) { agg.refunds++; agg.refundAmount += rf; }
+        const cur = (o.amounts && o.amounts.total && o.amounts.total.currency) || o.currency; if (cur) agg.currency = cur;
+      }
+      page++;
+    } while (page <= pages && page <= 60);
+    agg.sales = Math.round(agg.sales * 100) / 100; agg.refundAmount = Math.round(agg.refundAmount * 100) / 100;
+    return { ok: true, stats: agg };
+  } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 120) }; }
 }
 async function readSite(s) {
   const p = await ctx.newPage();
@@ -229,6 +231,15 @@ const authed = req => {
 };
 const srv = http.createServer((req, res) => {
   if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, needLogin: state.needLogin || [] })); }
+  if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
+    return (async () => {
+      try {
+        const u = new URL(req.url, 'http://x'); const code = u.searchParams.get('code'); if (!code) throw new Error('no-code');
+        await sallaExchange({ grant_type: 'authorization_code', code, redirect_uri: E.SALLA_REDIRECT || 'https://browser-production-10fb.up.railway.app/salla/callback' });
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<meta charset=utf-8><body style="font-family:sans-serif;direction:rtl;text-align:center;padding:40px;background:#FFF7F0"><h2>✅ تم ربط سلة بنجاح</h2><p>أغلق هذه الصفحة وارجع للمحادثة.</p></body>');
+      } catch (e) { res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<meta charset=utf-8><body style="font-family:sans-serif;direction:rtl;text-align:center;padding:40px"><h2>تعذّر الربط</h2><p>' + String(e.message || e) + '</p></body>'); }
+    })();
+  }
   if (!authed(req)) {
     if (req.url === '/import') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, err: 'الرمز غير صحيح' })); }   // بلا نافذة دخول حتى لا تعلق الإضافة
     res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dal"' }); return res.end('auth'); }
@@ -236,6 +247,9 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
   if (req.method === 'POST' && req.url === '/import') return importSessions(req, res);
   if (req.url === '/poll') { poll(true); res.writeHead(200); return res.end('ok'); }
+  if (req.url === '/salla/status') {   // هل سلة مربوطة؟
+    return (async () => { let ok = false, err = null; try { await sallaToken(); ok = true; } catch (e) { err = String(e.message || e); } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ linked: !!(SOAUTH && SOAUTH.refresh), tokenOk: ok, err, hasClientId: !!E.SALLA_CLIENT_ID })); })();
+  }
   if (req.url.startsWith('/report')) {   // تجهيز تقرير «حساب» عن فترة: سلة + بونات (الكاشير لاحقًا)
     return (async () => {
       try {
