@@ -34,6 +34,16 @@ elif cmd == 'app':
         js = open(os.path.join(d, m.group(1)), encoding='utf-8').read().replace('</script', '<\\/script')
         return '<script>' + js
     html = re.sub(r'<script src="([a-z0-9_]+\.js)(?:\?v=\d+)?">', inl, html)
+    # رقم التحديث: تاريخ الرياض + عدّاد يومي (يُحفظ في build.json) ليعرف المستخدم أن التطبيق تحدّث
+    import datetime; today = (datetime.datetime.utcnow() + datetime.timedelta(hours=3)).strftime('%Y-%m-%d')
+    bf = os.path.join(R, 'build.json'); b = {'d': '', 'n': 0}
+    try: b = json.load(open(bf))
+    except Exception: pass
+    b = {'d': today, 'n': (b['n'] + 1) if b.get('d') == today else 1}
+    json.dump(b, open(bf, 'w'))
+    build = today.replace('-', '.')[2:] + '.' + str(b['n'])   # مثل 26.10.16.3
+    html = html.replace('</head>', '<script>window.APP_BUILD=' + json.dumps(build) + '</script></head>', 1)
+    print('build', build)
     seal(html.encode('utf-8'), 'app.enc')
 elif cmd == 'live':
     app = json.load(open(sys.argv[3], encoding='utf-8'))
