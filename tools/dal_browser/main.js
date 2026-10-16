@@ -180,6 +180,18 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
   if (req.method === 'POST' && req.url === '/import') return importSessions(req, res);
   if (req.url === '/poll') { poll(true); res.writeHead(200); return res.end('ok'); }
+  if (req.url === '/bonatdiag') {   // تشخيص مؤقت: أسماء الكوكيز ونطاقاتها (بلا قيم) + حالة الطلب
+    return (async () => {
+      try {
+        const all = await ctx.cookies(['https://store.bonat.io', 'https://dashboard-api.bonat.io']);
+        const ck = all.map(c => c.name + '@' + c.domain + (c.secure ? '+S' : '') + '/' + c.sameSite + (c.expires > 0 ? '' : '·sess'));
+        const pg = await ctx.newPage();
+        let st;
+        try { await pg.goto('https://store.bonat.io/', { waitUntil: 'domcontentloaded', timeout: 30000 }); st = await pg.evaluate(async () => { const r = await fetch('https://dashboard-api.bonat.io/api/v5/customers/count?from=2026-10-16T00:00:00&to=2026-10-16T23:59:59', { credentials: 'include' }); return r.status; }).catch(e => 'ERR ' + e.message.slice(0, 80)); } finally { await pg.close().catch(() => {}); }
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ fetch: st, cookies: ck }, null, 1));
+      } catch (e) { res.writeHead(500); res.end(String(e.message || e)); }
+    })();
+  }
   proxy.web(req, res);
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
