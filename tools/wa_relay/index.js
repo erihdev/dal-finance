@@ -11,6 +11,7 @@ const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجموعات
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
 const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf });
+const invoices = require('./invoices');
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
 const names = new Map();
 
@@ -19,8 +20,10 @@ async function gas(o) {
   const r = await fetch(GAS, { method: 'POST', body: JSON.stringify(o), redirect: 'follow', headers: { 'Content-Type': 'text/plain' } });
   const j = await r.json(); if (!j.ok) throw new Error('gas ' + j.err); return j;
 }
-async function waha(path) {
-  const r = await fetch(WAHA + path, { headers: { 'X-Api-Key': WKEY, Accept: 'application/json' } });
+async function waha(path, raw) {
+  const url = /^https?:/.test(path) ? path : WAHA + path;
+  const r = await fetch(url, { headers: { 'X-Api-Key': WKEY, Accept: raw ? '*/*' : 'application/json' } });
+  if (raw) return r;
   if (!r.ok) throw new Error('waha ' + r.status); return r.json();
 }
 async function chatName(cid, isGroup, fallback) {
@@ -56,6 +59,7 @@ async function onMsg(p) {
   const chat = await chatName(cid, isGroup, isGroup ? '' : pushName);
   if (EXCLUDE.some(x => x === chat || x === digits(cid))) return;
   if (isGroup && GROUPS.length && !GROUPS.includes(chat)) return;
+  if (p.hasMedia && isGroup) invoices.onMedia(p, chat, me ? 'أنت' : (pushName || digits(await pnOf(String(p.participant || p.author || '')))), waha);
   const text = String(p.body || '').trim() || (p.hasMedia ? mediaLabel(p) : '');
   if (!text) return;
   const id = String(p.id && (p.id._serialized || p.id.id || p.id) || cid + ':' + p.timestamp);
@@ -121,7 +125,13 @@ async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['
 setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
-  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status() })); }
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status() })); }
+  if (req.method === 'POST' && req.url === '/invoice/process') {   // من متصفح دال (رفع يدوي من التطبيق): يقرأ ويفحص ويحفظ
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    let b = ''; req.on('data', c => { b += c; if (b.length > 20e6) req.destroy(); });
+    req.on('end', async () => { try { const j = JSON.parse(b || '{}'); const rec = await invoices.process(j.b64, j.mime, Object.assign({ src: 'app' }, j.meta || {})); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, rec })); } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } });
+    return;
+  }
   if (req.method !== 'POST' || !req.url.startsWith('/hook')) { res.writeHead(404); return res.end(); }
   if (SECRET && req.headers['x-relay-secret'] !== SECRET) { res.writeHead(401); return res.end(); }
   let b = ''; req.on('data', c => { b += c; if (b.length > 2e6) req.destroy(); });

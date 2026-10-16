@@ -376,6 +376,39 @@ async function checkCustReq() {   // التطبيق يكتب live/cust_req فن�
   try { const r = await gas({ op: 'get', paths: ['live/cust_req'] }); const d = r.docs && r.docs['live/cust_req']; const q = d && d.data; if (q && q.ts && q.ts !== lastCustReq) { lastCustReq = q.ts; await syncCustomers(); } } catch (e) { }
 }
 function dailyAt(h, fn) { const t = () => { const n = new Date(Date.now() + 3 * 3600e3); const ms = ((24 + h - n.getUTCHours() - 1) % 24) * 3600e3 + (60 - n.getUTCMinutes()) * 60e3; setTimeout(() => { fn(); t(); }, ms); }; t(); }
+
+// ===== صندوق الفواتير: تخزين الملفات في /data/invoices وفهرس live/invoices، تصدير شهري ZIP للمحاسب =====
+const IDIR = '/data/invoices'; try { fs.mkdirSync(IDIR, { recursive: true }); } catch (e) {}
+const RELAY = (E.RELAY_URL || 'http://relay.railway.internal:8080').replace(/\/$/, '');
+let invBusy = Promise.resolve();
+function invQueue(fn) { invBusy = invBusy.then(fn, fn); return invBusy; }
+async function invIndexAdd(rec) {   // يضيف/يحدّث سجلًا في live/invoices (آخر 15 شهرًا)
+  return invQueue(async () => {
+    let doc = { items: [] }; try { const r = await gas({ op: 'get', paths: ['live/invoices'] }); const d = r.docs && r.docs['live/invoices']; if (d && d.data && Array.isArray(d.data.items)) doc = d.data; } catch (e) {}
+    const i = doc.items.findIndex(x => x.id === rec.id); if (i >= 0) doc.items[i] = Object.assign(doc.items[i], rec); else doc.items.push(rec);
+    const cut = new Date(Date.now() - 460 * 864e5).toISOString(); doc.items = doc.items.filter(x => (x.at || '') >= cut).sort((a, b) => (b.date || b.at || '').localeCompare(a.date || a.at || ''));
+    doc.at = new Date().toISOString(); doc.n = doc.items.length;
+    await gas({ op: 'set', path: 'live/invoices', data: doc });
+  });
+}
+function invExt(m) { return /pdf/i.test(m) ? 'pdf' : /png/i.test(m) ? 'png' : /webp/i.test(m) ? 'webp' : 'jpg'; }
+function invFile(rec) { const ym = String(rec.date || rec.at || '').slice(0, 7) || 'unknown'; const d = IDIR + '/' + ym; try { fs.mkdirSync(d, { recursive: true }); } catch (e) {} return d + '/' + rec.id + '.' + invExt(rec.mime); }
+function readBody(req, max) { return new Promise((ok, no) => { let b = ''; req.on('data', c => { b += c; if (b.length > max) { req.destroy(); no(new Error('too-big')); } }); req.on('end', () => ok(b)); req.on('error', no); }); }
+function cors(req, res) { const o = req.headers.origin || ''; if (/erihdev\.github\.io$|^https:\/\/dalksa\.com$/.test(o)) { res.setHeader('Access-Control-Allow-Origin', o); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Allow-Headers', 'content-type,authorization'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS'); } }
+async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BOM) لشهر
+  let doc = { items: [] }; try { const r = await gas({ op: 'get', paths: ['live/invoices'] }); const d = r.docs && r.docs['live/invoices']; if (d && d.data) doc = d.data; } catch (e) {}
+  const items = (doc.items || []).filter(x => String(x.date || x.at || '').slice(0, 7) === ym);
+  const tmp = '/tmp/inv_' + ym + '_' + Date.now(); fs.mkdirSync(tmp, { recursive: true });
+  const rows = [['#', 'الحالة', 'المورد', 'الرقم الضريبي', 'رقم الفاتورة', 'التاريخ', 'قبل الضريبة', 'الضريبة', 'الإجمالي', 'النوع', 'ما ينقص', 'الملف', 'المصدر']];
+  let k = 0; for (const x of items) { k++; const f = invFile(x); const name = String(k).padStart(3, '0') + '_' + String(x.supplier || 'مورد').replace(/[\/\\:*?"<>|]/g, ' ').slice(0, 30) + '_' + String(x.invoice_no || x.id).replace(/[\/\\:*?"<>|]/g, '-').slice(0, 20) + '.' + invExt(x.mime);
+    try { fs.copyFileSync(f, tmp + '/' + name); } catch (e) {}
+    rows.push([k, x.status, x.supplier || '', x.supplier_vat || '', x.invoice_no || '', x.date || '', x.net ?? '', x.vat ?? '', x.total ?? '', x.kind || '', (x.missing || []).join(' / '), name, x.src === 'wa' ? 'واتساب ' + (x.chat || '') : 'التطبيق']); }
+  fs.writeFileSync(tmp + '/فهرس-الفواتير-' + ym + '.csv', '﻿' + rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n'));
+  const out = '/tmp/dal-invoices-' + ym + '.zip'; try { fs.unlinkSync(out); } catch (e) {}
+  await new Promise((ok, no) => require('child_process').execFile('zip', ['-r', '-j', out, tmp], (e) => e ? no(e) : ok()));
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
+  return { file: out, n: items.length, total: items.reduce((a, x) => a + (+x.total || 0), 0), vat: items.reduce((a, x) => a + (+x.vat || 0), 0) };
+}
 // العرض عن بُعد خلف كلمة مرور
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:6080', ws: true });
 proxy.on('error', () => {});
@@ -402,6 +435,10 @@ const srv = http.createServer((req, res) => {
     req.on('end', () => { try { const j = JSON.parse(b || '{}'); const dt = j && j.data; if (j && /authorize/i.test(j.event || '') && dt && dt.access_token && dt.refresh_token) { const exp = dt.expires && +dt.expires > 1e11 ? +dt.expires : Date.now() + (+dt.expires || 1209600) * 1000; SOAUTH = { access: dt.access_token, refresh: dt.refresh_token, exp, at: Date.now() }; try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); console.log('salla token via webhook, refresh ok'); } catch (e) {} } } catch (e) {} res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); });
     return;
   }
+  if (req.method === 'POST' && req.url === '/invoice/ingest') {   // من الناقل: ملف + سجل مفحوص (محمي بمفتاح)
+    return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const j = JSON.parse(await readBody(req, 25e6) || '{}'); const rec = j.rec; if (!rec || !rec.id) throw new Error('bad'); if (j.b64) fs.writeFileSync(invFile(rec), Buffer.from(j.b64, 'base64')); await invIndexAdd(rec); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
+  }
+  if (req.method === 'OPTIONS') { cors(req, res); res.writeHead(204); return res.end(); }
   if (!authed(req)) {
     if (req.url === '/import') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: false, err: 'الرمز غير صحيح' })); }   // بلا نافذة دخول حتى لا تعلق الإضافة
     res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="dal"' }); return res.end('auth'); }
@@ -421,6 +458,22 @@ const srv = http.createServer((req, res) => {
       try { await p.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 }); await p.waitForTimeout(+u.searchParams.get('w') || 8000); } catch (e) { seen.push({ err: String(e.message || e).slice(0, 100) }); } finally { await p.close().catch(() => {}); }
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(seen, null, 1));
     })();
+  }
+  cors(req, res);
+  if (req.method === 'POST' && req.url === '/invoice/upload') {   // رفع يدوي من التطبيق → الناقل يقرأ ويفحص → يرجع هنا للتخزين
+    return (async () => { try { const b = await readBody(req, 25e6); const r = await fetch(RELAY + '/invoice/process', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': KEY }, body: b }); const t = await r.text(); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(t); } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
+  }
+  if (req.method === 'POST' && req.url === '/invoice/update') {   // تعديل حالة (أُرسلت للمحاسب / تصحيح حقل)
+    return (async () => { try { const j = JSON.parse(await readBody(req, 1e6) || '{}'); if (!j.id) throw new Error('id'); await invIndexAdd(j); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
+  }
+  if (req.url.startsWith('/invoice/file/')) {   // عرض ملف فاتورة
+    const id = decodeURIComponent(req.url.split('/')[3] || '').replace(/[^A-Za-z0-9_-]/g, ''); let found = null;
+    try { for (const ym of fs.readdirSync(IDIR)) for (const f of fs.readdirSync(IDIR + '/' + ym)) if (f.startsWith(id + '.')) found = IDIR + '/' + ym + '/' + f; } catch (e) {}
+    if (!found) { res.writeHead(404); return res.end('no'); }
+    const ext = found.split('.').pop(); res.writeHead(200, { 'Content-Type': ext === 'pdf' ? 'application/pdf' : 'image/' + (ext === 'jpg' ? 'jpeg' : ext), 'Cache-Control': 'private, max-age=86400' }); return fs.createReadStream(found).pipe(res);
+  }
+  if (req.url.startsWith('/invoice/export')) {   // ZIP الشهر للمحاسب
+    return (async () => { try { const u = new URL(req.url, 'http://x'); const ym = (u.searchParams.get('month') || prevMonth().from.slice(0, 7)).replace(/[^0-9-]/g, ''); const z = await invExport(ym); res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="dal-invoices-' + ym + '.zip"' }); fs.createReadStream(z.file).pipe(res); } catch (e) { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('تعذّر التصدير: ' + String(e.message || e)); } })();
   }
   if (req.url.startsWith('/customers/sync')) { return (async () => { const m = await syncCustomers(); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(m, null, 1)); })(); }
   if (req.url.startsWith('/salla/try')) { return (async () => { const u = new URL(req.url, 'http://x'); let o = {}; try { const tok = await sallaToken(); const r = await fetch('https://api.salla.dev' + u.searchParams.get('path'), { headers: { Authorization: 'Bearer ' + tok, Accept: 'application/json' } }); o = { status: r.status, body: (await r.text()).slice(0, 600) }; } catch (e) { o = { err: String(e.message || e) }; } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); })(); }
