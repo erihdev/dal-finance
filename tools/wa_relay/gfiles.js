@@ -115,7 +115,7 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
   // قراءة ما سبق في قروب (مرة واحدة عند الطلب): كل مرفق في آخر N رسالة لم يُسجَّل بعد.
   // WAHA يحذف الملف المحمَّل بعد ~3 دقائق، لذلك نعيد طلب القائمة كل دفعة صغيرة ونحمّل ملفاتها فورًا ثم نقرؤها
   let bf = null;   // حالة آخر قراءة سابقة
-  async function backfill(cid, limit, chat, whoOf) {
+  async function backfill(cid, limit, chat, whoOf, since) {
     if (bf && bf.running) throw new Error('backfill running');
     bf = { chat, total: 0, done: 0, skip: 0, fail: 0, running: true, at: new Date().toISOString() };
     const midOf = p => String(p.id && (p.id._serialized || p.id) || '');
@@ -124,7 +124,7 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
       const cur = (await get()).items || [];
       const have = new Set(cur.filter(x => !/^تعذّرت القراءة/.test(x.summary || '')).map(x => x.mid));   // ما فشلت قراءته سابقًا يُعاد
       let L = (await list()).filter(p => p.hasMedia && midOf(p)).sort((a, b) => a.timestamp - b.timestamp);
-      const todo = L.filter(p => !have.has(midOf(p))); bf.skip = L.length - todo.length; bf.total = L.length;
+      const todo = L.filter(p => !have.has(midOf(p)) && (!since || (+p.timestamp || 0) * 1000 >= since)); bf.skip = L.length - todo.length; bf.total = L.length;
       const PAR = 4;   // أربعة ملفات تُقرأ معًا
       for (let i = 0; i < todo.length; i += PAR) {
         const chunk = todo.slice(i, i + PAR);

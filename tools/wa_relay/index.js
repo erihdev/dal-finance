@@ -163,7 +163,7 @@ const srv = http.createServer((req, res) => {
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     const Q = new URL(req.url, 'http://x').searchParams; const cid = Q.get('cid') || '';
     if (!/@g\.us$/.test(cid)) { res.writeHead(400); return res.end('cid'); }
-    (async () => { const chat = await chatName(cid, true, ''); gfiles.backfill(cid, +Q.get('limit') || 100, chat, whoOf).catch(e => console.log('gfiles backfill ERR', e.message)); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ started: true, chat })); })()
+    (async () => { const chat = await chatName(cid, true, ''); gfiles.backfill(cid, +Q.get('limit') || 100, chat, whoOf, Date.parse(Q.get('since') || '') || 0).catch(e => console.log('gfiles backfill ERR', e.message)); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ started: true, chat })); })()
       .catch(e => { res.writeHead(500); res.end(String(e.message)); });
     return;
   }
