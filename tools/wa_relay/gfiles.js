@@ -127,7 +127,7 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
       for (let i = 0; i < todo.length; i += PAR) {
         const chunk = todo.slice(i, i + PAR);
         if (i) { const fresh = new Map((await list()).map(p => [midOf(p), p])); for (const p of chunk) { const f = fresh.get(midOf(p)); if (f && f.media) p.media = f.media; } }   // روابط جديدة لهذه الدفعة
-        const got = await Promise.all(chunk.map(async p => { try { return [p, p.media && p.media.url ? await wm.download(p.media.url, p.media.mimetype) : null]; } catch (e) { lastErr = 'dl ' + String(e.message || e).slice(0, 80); return [p, null]; } }));   // التحميل أولًا وبسرعة
+        const got = await Promise.all(chunk.map(async p => { try { const st = await wm.stored(p); if (st) return [p, st]; return [p, p.media && p.media.url ? await wm.download(p.media.url, p.media.mimetype) : null]; } catch (e) { lastErr = 'dl ' + String(e.message || e).slice(0, 80); return [p, null]; } }));   // التحميل أولًا وبسرعة
         await Promise.all(got.map(async ([p, d]) => {
           if (!d) { bf.fail++; return; }
           const mid = midOf(p), me = !!p.fromMe, from = me ? 'أنت' : await whoOf(String(p.participant || p.author || (p._data && p._data.author) || ''), (p._data && (p._data.notifyName || p._data.pushName)) || '');

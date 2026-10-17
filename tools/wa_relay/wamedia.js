@@ -40,6 +40,9 @@ function setup({ waha, key }) {
   }
   const nameOf = p => (p.media && p.media.filename) || (p._data && (p._data.filename || p._data.fileName)) || '';
   const fromPayload = p => save(p.media && p.media.url, p.media && p.media.mimetype, nameOf(p), msgId(p));
-  return { save, put, download, fromPayload, nameOf, msgId, status: () => ({ saved, lastErr }) };
+  async function stored(p) {   // نسخة محفوظة سابقًا في متصفح دال (لا تنتهي مثل روابط واتساب)
+    try { const r = await fetch(PUBLIC + '/wa/m/' + idOf(msgId(p))); if (!r.ok) return null; const buf = Buffer.from(await r.arrayBuffer()); return buf.length ? { buf, mime: r.headers.get('content-type') || 'application/octet-stream' } : null; } catch (e) { return null; }
+  }
+  return { save, put, download, fromPayload, nameOf, msgId, stored, status: () => ({ saved, lastErr }) };
 }
 module.exports = { setup };
