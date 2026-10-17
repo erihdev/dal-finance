@@ -10,11 +10,14 @@ const KEEP_MS = (+E.KEEP_HOURS || 48) * 3600e3, MAX = +E.MAX_MSGS || 600;
 const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجموعات
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
+let NAMES = {}; try { NAMES = JSON.parse(E.NAMES_JSON || '{}'); } catch (e) {}   // أسماء عرض لأرقام غير محفوظة في الجوال (شريك، محاسب...): رقم → اسم
 const pusher = require('./push').setup({ gas: o => gas(o) });
 const wm = require('./wamedia').setup({ waha: (a, b) => waha(a, b), key: KEY });
 const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b), wm });
 const invoices = require('./invoices');
-const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
+const jobsMod = require('./jobs');
+const jobs = jobsMod.setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
+const gfiles = require('./gfiles').setup({ gas: o => gas(o), waha: (a, b) => waha(a, b), wm, addDaily: l => jobs.addDaily(l), touch: m => jobs.touch(m) });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
 const names = new Map();
 
@@ -36,7 +39,8 @@ async function chatName(cid, isGroup, fallback) {
     if (isGroup) { const g = await waha(`/api/${SESSION}/groups/${encodeURIComponent(cid)}`); n = g.subject || g.name || (g.groupMetadata && g.groupMetadata.subject) || ''; }
     else { const k = await waha(`/api/contacts?session=${SESSION}&contactId=${encodeURIComponent(cid)}`); n = k.name || k.pushname || k.pushName || ''; }
   } catch (e) { }
-  n = n || fallback || cid.split('@')[0];
+  if (/^[+\d∙•·.\s()-]+$/.test(n)) n = '';   // «+966∙∙∙∙∙∙∙17»: ليس اسمًا محفوظًا بل رقم مموّه
+  n = n || NAMES[digits(cid)] || fallback || cid.split('@')[0];
   names.set(cid, { n, at: Date.now() }); return n;
 }
 const pnCache = new Map();
@@ -48,6 +52,8 @@ async function pnOf(jid) {   // واتساب يستخدم معرّفات @lid ب
   pn = pn ? pn.replace('@s.whatsapp.net', '@c.us') : jid; pnCache.set(jid, pn); return pn;
 }
 const digits = s => String(s || '').split('@')[0].replace(/\D/g, '');
+// اسم عضو القروب كما هو محفوظ في جهات اتصال الجوال (أدق من اسم العرض الذي يختاره هو)، وإلا اسم العرض، وإلا رقمه
+async function whoOf(jid, pushName) { if (!jid) return pushName || ''; const pn = await pnOf(String(jid)); return chatName(pn, false, pushName || '') || digits(pn); }
 // رقم حساب المحمصة نفسه (حتى لا نحسب رسائلي الصادرة على اسمي أنا): من WAHA عند التشغيل
 let SELF = '';
 async function loadSelf() { for (let i = 0; i < 10 && !SELF; i++) { try { const s = await waha(`/api/sessions/${SESSION}`); const id = s && s.me && (s.me.id || s.me.jid || ''); SELF = digits(id); if (SELF) console.log('self ok'); } catch (e) {} if (!SELF) await new Promise(ok => setTimeout(ok, 20000)); } }
@@ -73,18 +79,21 @@ async function onMsg(p) {
   const chat = await chatName(cid, isGroup, (isGroup || me) ? '' : pushName);   // pushName في رسالتي الصادرة هو اسمي أنا
   if (EXCLUDE.some(x => x === chat || x === digits(cid))) return;
   if (isGroup && GROUPS.length && !GROUPS.includes(chat)) return;
-  if (p.hasMedia && isGroup) invoices.onMedia(p, chat, me ? 'أنت' : (pushName || digits(await pnOf(String(p.participant || p.author || '')))), waha);
+  const who = me ? 'أنت' : (isGroup ? await whoOf(String(p.participant || p.author || ''), pushName) : chat);
+  if (p.hasMedia && isGroup) invoices.onMedia(p, chat, who, waha);
   const text = String(p.body || '').trim() || (p.hasMedia ? mediaLabel(p) : '');
   const mf = !isGroup && !me && p.hasMedia ? await wm.fromPayload(p) : null;   // المرفق يظهر في بطاقة الرد بالتطبيق
   if (!text) return;
   const id = String(p.id && (p.id._serialized || p.id.id || p.id) || cid + ':' + p.timestamp);
   if (buf.some(x => x.id === id)) return;
   buf.push({ id, t: (+p.timestamp || Date.now() / 1000) * 1000, chat, g: isGroup, ph: isGroup ? '' : digits(cid),
-    from: me ? 'أنت' : (isGroup ? (pushName || digits(await pnOf(String(p.participant || p.author || '')))) : chat), me, x: text.slice(0, 700),
+    from: who, me, x: text.slice(0, 700),
     q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined, mf: mf || undefined });
   schedule();
-  try { drafter.onMessage(buf[buf.length - 1]); } catch (e) { lastErr = 'drafter ' + e.message; }
-  try { jobs.onMessage(buf[buf.length - 1]); } catch (e) { lastErr = 'jobs ' + e.message; }
+  const m = buf[buf.length - 1];
+  try { drafter.onMessage(m); } catch (e) { lastErr = 'drafter ' + e.message; }
+  try { jobs.onMessage(m); } catch (e) { lastErr = 'jobs ' + e.message; }
+  if (isGroup && p.hasMedia && jobsMod.isDal(chat)) gfiles.onMedia(p, m);   // ملفات القروبات: تُقرأ وتُصنَّف في الخلفية
 }
 function schedule() {
   dirty = true; if (!firstAt) firstAt = Date.now();
@@ -142,7 +151,15 @@ async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['
 setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
-  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status(), media: wm.status() })); }
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status(), media: wm.status(), gfiles: gfiles.status() })); }
+  if (req.method === 'POST' && req.url.startsWith('/gfiles/backfill')) {   // قراءة ملفات قروب سابقة (مرة واحدة): ?cid=<معرّف القروب>&limit=N
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    const Q = new URL(req.url, 'http://x').searchParams; const cid = Q.get('cid') || '';
+    if (!/@g\.us$/.test(cid)) { res.writeHead(400); return res.end('cid'); }
+    (async () => { const chat = await chatName(cid, true, ''); gfiles.backfill(cid, +Q.get('limit') || 100, chat, whoOf).catch(e => console.log('gfiles backfill ERR', e.message)); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ started: true, chat })); })()
+      .catch(e => { res.writeHead(500); res.end(String(e.message)); });
+    return;
+  }
   if (req.method === 'POST' && /^\/jobs\/(slow|rt|remind)$/.test(req.url)) {   // تشغيل يدوي للتجربة
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     const k = req.url.split('/').pop(); ({ slow: jobs.runSlow, rt: jobs.runRt, remind: jobs.runReminders })[k]().then(() => { res.writeHead(200); res.end('ok'); }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
@@ -165,11 +182,18 @@ const srv = http.createServer((req, res) => {
     backfillMedia().then(n => { res.writeHead(200); res.end(JSON.stringify({ ok: true, n })); }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
     return;
   }
+  if (req.method === 'GET' && req.url.startsWith('/debug/who')) {   // تشخيص: معرّف @lid → رقم → اسم جهة الاتصال المحفوظ
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    const jid = String(new URL(req.url, 'http://x').searchParams.get('jid') || '');
+    (async () => { const pn = await pnOf(jid); let k = null; try { k = await waha(`/api/contacts?session=${SESSION}&contactId=${encodeURIComponent(pn)}`); } catch (e) { k = { err: e.message }; }
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ jid, pn, name: k && (k.name || ''), pushname: k && (k.pushname || k.pushName || ''), err: k && k.err })); })().catch(e => { res.writeHead(500); res.end(String(e.message)); });
+    return;
+  }
   if (req.method === 'GET' && req.url.startsWith('/debug/hist')) {   // تشخيص: ما يعيده WAHA لدردشة خاصة (مرفقات؟) وما في الذاكرة
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
-    const ph = String(new URL(req.url, 'http://x').searchParams.get('ph') || '').replace(/\D/g, '');
-    waha(`/api/${E.WAHA_SESSION || 'default'}/chats/${encodeURIComponent(ph + '@c.us')}/messages?limit=15&downloadMedia=true`).then(ms => {
-      const h = (Array.isArray(ms) ? ms : []).map(m => ({ id: String(m.id && (m.id._serialized || m.id) || '').slice(-12), t: new Date((+m.timestamp || 0) * 1000).toISOString().slice(5, 16), me: !!m.fromMe, media: !!m.hasMedia, url: !!(m.media && m.media.url), mime: (m.media && m.media.mimetype) || '', err: (m.media && m.media.error) || '', x: String(m.body || '').slice(0, 40) }));
+    const Q = new URL(req.url, 'http://x').searchParams; const ph = String(Q.get('ph') || '').replace(/\D/g, ''); const cid = Q.get('cid') || (ph + '@c.us'); const lim = Math.min(300, +Q.get('limit') || 15);
+    waha(`/api/${E.WAHA_SESSION || 'default'}/chats/${encodeURIComponent(cid)}/messages?limit=${lim}&downloadMedia=${Q.get('dl') === '0' ? 'false' : 'true'}`).then(ms => {
+      const h = (Array.isArray(ms) ? ms : []).map(m => ({ id: String(m.id && (m.id._serialized || m.id) || '').slice(-12), t: new Date((+m.timestamp || 0) * 1000).toISOString().slice(5, 16), me: !!m.fromMe, from: String(m.participant || m.author || (m._data && m._data.author) || '').slice(0, 24), name: String((m._data && (m._data.notifyName || m._data.pushName)) || '').slice(0, 24), media: !!m.hasMedia, url: !!(m.media && m.media.url), mime: (m.media && m.media.mimetype) || '', fn: String((m.media && m.media.filename) || (m._data && m._data.filename) || '').slice(0, 40), err: (m.media && m.media.error) || '', x: String(m.body || '').slice(0, 40) }));
       const b = buf.filter(m => !m.g && m.ph === ph).map(m => ({ id: m.id.slice(-12), t: new Date(m.t).toISOString().slice(5, 16), me: m.me, md: !!m.md, mf: !!m.mf, d: !!(m.mf && m.mf.d), x: String(m.x || '').slice(0, 30) }));
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ waha: h, buf: b }));
     }).catch(e => { res.writeHead(500); res.end(String(e.message)); });

@@ -31,11 +31,14 @@ async function claude(system, user) {
 let STAFF = {}; try { STAFF = JSON.parse(E.STAFF_JSON || '{}'); } catch (e) {}
 const SESSION = E.WAHA_SESSION || 'default';
 const digitsOf = s => String(s || '').replace(/\D/g, '');
+const isDal = n => /dal|دال|hesab|حساب|lofan|لوفان|roast|تحميص|مشتريات|مورد/i.test(String(n)) || (E.DAL_GROUPS || '').split(',').map(x => x.trim()).includes(String(n));   // قروبات المحمصة فقط (لا المنتديات العامة)
+// ملخص ملف قُرئ (من سجل ملفات القروبات) يدخل في سياق القراءة بدل «📷 صورة»
+const gfTxt = g => g ? ` [ملف مقروء: ${g.type} — ${g.title}: ${g.summary}${g.amount != null ? ' | المبلغ ' + g.amount : ''}${g.to ? ' | المستفيد ' + g.to : ''}${g.ref ? ' | المرجع ' + g.ref : ''}]` : '';
 function setup({ gas, getBuf, push = async () => {}, waha = null }) {
   const get = async p => { const r = await gas({ op: 'get', paths: ['live/' + p] }); return ((r.docs || {})['live/' + p] || {}).data; };
   const set = (p, data) => gas({ op: 'set', path: 'live/' + p, data });
   const groupMsgs = name => getBuf().filter(m => m.g && m.chat === name).sort((a, b) => a.t - b.t);
-  const conv = ms => ms.map(m => `[${m.id}] ${ymd(new Date(m.t))} ${ksa(new Date(m.t)).toISOString().slice(11, 16)} ${m.from}: ${m.x}${m.q ? ' (ردًا على: ' + m.q + ')' : ''}`).join('\n');
+  const conv = ms => ms.map(m => `[${m.id}] ${ymd(new Date(m.t))} ${ksa(new Date(m.t)).toISOString().slice(11, 16)} ${m.from}: ${m.x}${gfTxt(m.gf)}${m.q ? ' (ردًا على: ' + m.q + ')' : ''}`).join('\n');
 
   // ---------- 1) سلو ----------
   const SYS_SLOW = `تقرأ رسائل قروب واتساب «DAL & SLOW». سلو تُحضر خيش بن أخضر لمحمصة دال لتحميصه.
@@ -101,8 +104,8 @@ function setup({ gas, getBuf, push = async () => {}, waha = null }) {
 - open: ما يحتاج تصرّفًا أو قرارًا من ضيف الله تحديدًا (اعتماد، دفع، رد مطلوب منه، موافقة، مستند يطلبه أحد منه). {"mid":"معرّف الرسالة","t":"سطر واحد: من يطلب وماذا، بالأرقام إن ذُكرت","lv":"bad إن كان عاجلًا أو فيه موعد قريب وإلا warn"}
 - items: أحداث جديرة بالذكر في القروب (تم تسليم، أُرسل ملف مهم، تم دفع، مشكلة تشغيل) {"mid":"…","t":"سطر قصير: من وماذا"}
 قواعد: لا تخترع. ما لم يُذكر صراحة لا يُكتب. تجاهل التحيات والملصقات والصور بلا سياق. لا تذكر أي مبالغ نقدية للحمّاص. لا أرقام هوية أو حسابات بنكية.
+ما بين [ملف مقروء: …] هو محتوى ملف أُرسل في القروب وقد قُرئ فعلًا؛ اعتمد عليه. الملفات نفسها مسجّلة تلقائيًا في سجل الملفات، فلا تضع في items «أُرسل ملف» إلا إن كان فيه حدث مهم.
 ما كتبه ضيف الله نفسه ليس «مطلوبًا منه». أعد JSON فقط: {"open":[],"items":[]}`;
-  const isDal = n => /dal|دال|hesab|حساب|lofan|لوفان|roast|تحميص|مشتريات|مورد/i.test(String(n)) || (E.DAL_GROUPS || '').split(',').map(x => x.trim()).includes(String(n));   // قروبات المحمصة فقط (لا المنتديات العامة)
   const gLast = {};   // آخر معرّف عولج لكل قروب حتى لا نعيد قراءة الرسائل نفسها
   async function runGroup(name) {
     const all = groupMsgs(name); if (!all.length || !AKEY) return;
@@ -284,15 +287,17 @@ customer=true فقط إذا كان يشتري أو يسأل عن بن/منتج/�
   setInterval(() => runReminders().catch(e => { lastErr = 'remind ' + e.message; }), 30 * 60e3);
   setTimeout(() => runReminders().catch(e => { lastErr = 'remind ' + e.message; }), 90e3);
 
+  function onMessage(m) {
+    if (m.g && m.chat === SLOW_GROUP) debounce('slow', runSlow);
+    else if (m.g && m.chat === RT_GROUP) debounce('rt', runRt);
+    else if (m.g) { if (!m.me && isDal(m.chat)) debounce('g:' + m.chat, () => runGroup(m.chat)); }
+    else { onPrivate(m); if (m.ph && !STAFF[m.ph]) { if (m.me) markCustomerReplied(m.ph, m.t); else debounce('cu:' + m.ph, () => runCustomer(m.ph)); } }
+  }
   return {
-    onMessage(m) {
-      if (m.g && m.chat === SLOW_GROUP) debounce('slow', runSlow);
-      else if (m.g && m.chat === RT_GROUP) debounce('rt', runRt);
-      else if (m.g) { if (!m.me && isDal(m.chat)) debounce('g:' + m.chat, () => runGroup(m.chat)); }
-      else { onPrivate(m); if (m.ph && !STAFF[m.ph]) { if (m.me) markCustomerReplied(m.ph, m.t); else debounce('cu:' + m.ph, () => runCustomer(m.ph)); } }
-    },
+    onMessage,
+    touch(m) { if (m.g) onMessage(m); },   // قُرئ ملف في القروب: نؤجل قراءة القروب حتى يدخل ملخصه في السياق
     runSlow, runRt, runReminders, dueReminders, addDaily, addOpen, runGroup, runCustomer, runSupplier,
     status() { return { model: MODEL, enabled: !!AKEY, runs, lastErr }; },
   };
 }
-module.exports = { setup };
+module.exports = { setup, isDal };

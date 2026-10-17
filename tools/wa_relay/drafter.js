@@ -49,7 +49,7 @@ async function claude(system, user) {
 async function claudeBlocks(system, blocks, maxTokens) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST', headers: { 'x-api-key': KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens || 400, system, messages: [{ role: 'user', content: blocks }] }),
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens || 400, thinking: { type: 'between_tools' }, system, messages: [{ role: 'user', content: blocks }] }),   // وصف مباشر بلا تفكير مسبق (كان يستهلك الحد الأقصى)
   });
   const j = await r.json(); if (!r.ok) throw new Error('claude ' + r.status + ' ' + JSON.stringify(j).slice(0, 200));
   return (j.content || []).map(c => c.text || '').join('').trim();
