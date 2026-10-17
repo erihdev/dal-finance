@@ -10,9 +10,10 @@ const KEEP_MS = (+E.KEEP_HOURS || 48) * 3600e3, MAX = +E.MAX_MSGS || 600;
 const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجموعات
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
-const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf });
+const pusher = require('./push').setup({ gas: o => gas(o) });
+const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push });
 const invoices = require('./invoices');
-const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf });
+const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
 const names = new Map();
 
@@ -127,10 +128,27 @@ async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['
 setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
-  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status() })); }
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status() })); }
   if (req.method === 'POST' && /^\/jobs\/(slow|rt|remind)$/.test(req.url)) {   // تشغيل يدوي للتجربة
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     const k = req.url.split('/').pop(); ({ slow: jobs.runSlow, rt: jobs.runRt, remind: jobs.runReminders })[k]().then(() => { res.writeHead(200); res.end('ok'); }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/mail') {   // من متصفح دال: رسائل إيميل المحمصة الجديدة → المهام اليومية + إشعار
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    let b = ''; req.on('data', c => { b += c; if (b.length > 1e6) req.destroy(); });
+    req.on('end', async () => { try {
+      const j = JSON.parse(b || '{}'); const SKIP = /security alert|sign[- ]?in|تسجيل الدخول|تنبيه أمني|verification code|رمز التحقق|password|كلمة المرور|no-reply@accounts\.google\.com/i;
+      const IMP = /فاتورة|invoice|statement|كشف|payment|سداد|دفع|تحويل|transfer|زاتكا|zatca|ضريب|vat|عرض سعر|quotation|order|طلب|عقد|contract|إنذار|مخالفة/i;
+      const items = (j.mails || []).filter(m => m && m.id && !SKIP.test((m.subject || '') + ' ' + (m.email || ''))).slice(0, 20)
+        .map(m => ({ src: 'الإيميل', t: ((m.from || m.email || '') + ': ' + (m.subject || '(بلا عنوان)')).slice(0, 200) + (m.summary ? ' — ' + String(m.summary).slice(0, 140) : ''), s: m.when || '', lv: IMP.test((m.subject || '') + ' ' + (m.summary || '')) ? 'warn' : 'info', k: 'mail:' + m.id }));
+      await jobs.addDaily(items); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, n: items.length }));
+    } catch (e) { res.writeHead(500); res.end(String(e.message)); } });
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/push/test') {   // إشعار تجربة
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    pusher.push({ title: 'دال', msg: 'تجربة الإشعارات ✅', lv: 'info', tag: 'white_check_mark' }).then(() => { res.writeHead(200); res.end(JSON.stringify(pusher.status())); });
     return;
   }
   if (req.method === 'POST' && req.url === '/invoice/process') {   // من متصفح دال (رفع يدوي من التطبيق): يقرأ ويفحص ويحفظ

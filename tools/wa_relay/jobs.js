@@ -28,7 +28,7 @@ async function claude(system, user) {
   return JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
 }
 
-function setup({ gas, getBuf }) {
+function setup({ gas, getBuf, push = async () => {} }) {
   const get = async p => { const r = await gas({ op: 'get', paths: ['live/' + p] }); return ((r.docs || {})['live/' + p] || {}).data; };
   const set = (p, data) => gas({ op: 'set', path: 'live/' + p, data });
   const groupMsgs = name => getBuf().filter(m => m.g && m.chat === name).sort((a, b) => a.t - b.t);
@@ -104,7 +104,7 @@ function setup({ gas, getBuf }) {
         const same = (it.phone && m.ph && it.phone === m.ph) || it.chat === m.chat; if (!same) continue;
         const itT = Date.parse(it.at || it.su || 0) || 0; if (m.t <= itT) continue;
         if (m.me && it.st === 'new') { it.st = 'sent'; it.su = now; it.p = 'تم الرد ' + hm(m.t); ch = true; }
-        else if (!m.me && it.st === 'sent') { it.st = 'followup'; it.su = now; it.p = 'ردّ: ' + String(m.x).slice(0, 140); ch = true; }
+        else if (!m.me && it.st === 'sent') { it.st = 'followup'; it.su = now; it.p = 'ردّ: ' + String(m.x).slice(0, 140); ch = true; push({ title: 'ردّ من ' + (it.from || it.chat), msg: String(m.x).slice(0, 300), lv: 'warn', tag: 'speech_balloon' }); }
       }
       if (ch) { d.at = now; await set('inbox', d); runs.inbox++; }
     }).catch(e => { lastErr = 'inbox ' + e.message; });
@@ -141,7 +141,7 @@ function setup({ gas, getBuf }) {
     let ch = false;
     for (const [key, t, lv] of due) {
       if (d.notified[key]) continue;
-      d.notified[key] = ymd(new Date()); d.open.push({ t, who: 'المواعيد', since: arDate(new Date()), lv, k: key }); ch = true;
+      d.notified[key] = ymd(new Date()); d.open.push({ t, who: 'المواعيد', since: arDate(new Date()), lv, k: key }); ch = true; push({ title: 'تذكير موعد', msg: t, lv, tag: 'alarm_clock' });
     }
     if (!ch) return;
     const cut = ymd(new Date(Date.now() - 60 * 864e5)); for (const [k, v] of Object.entries(d.notified)) if (v < cut) delete d.notified[k];
@@ -157,6 +157,7 @@ function setup({ gas, getBuf }) {
       const d = (await get('daily')) || {}; d.items = d.items || [];
       const keys = new Set(d.items.map(x => x.k).filter(Boolean)); const fresh = items.filter(x => !keys.has(x.k)); if (!fresh.length) return;
       d.items = fresh.concat(d.items).slice(0, 120); d.at = new Date().toISOString(); await set('daily', d);
+      for (const x of fresh) push({ title: x.src || 'دال', msg: x.t, lv: x.lv, tag: x.src === 'الإيميل' ? 'email' : 'bell' });
     }).catch(e => { lastErr = 'daily ' + e.message; });
     return dailyBusy;
   }
@@ -170,7 +171,7 @@ function setup({ gas, getBuf }) {
       else if (m.g && m.chat === RT_GROUP) debounce('rt', runRt);
       else if (!m.g) onPrivate(m);
     },
-    runSlow, runRt, runReminders, dueReminders,
+    runSlow, runRt, runReminders, dueReminders, addDaily,
     status() { return { model: MODEL, enabled: !!AKEY, runs, lastErr }; },
   };
 }

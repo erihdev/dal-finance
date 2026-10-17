@@ -10,6 +10,7 @@ let SALES = { at: null };
 const E = process.env; const fs = require('fs');
 const USER = E.VIEW_USER || 'dal', PASS = E.VIEW_PASSWORD || '';
 const GAS = E.GAS_URL, KEY = E.DAL_KEY, POLL = (+E.POLL_MIN || 5) * 60e3;
+const FAST = Math.max(30, +E.FAST_SEC || 60) * 1000, FAST_K = ['foodics', 'retm'];   // أرقام المبيعات كل دقيقة
 const SITES = [
   { k: 'foodics', name: 'فودكس', url: 'https://console.foodics.com/', login: /login|auth|signin/i },
   { k: 'retm', name: 'رتم', url: 'https://retm.sa/dashboard?period=1', login: /login|signin/i },
@@ -140,24 +141,37 @@ async function poll(force) {
   if (!force && (viewers > 0 || Date.now() - lastView < 3 * 60e3)) return;   // لا نفتح تبويبات أثناء استخدامك للشاشة
   busy = true;
   try {
-    for (const s of SITES) state.sites[s.k] = Object.assign({ name: s.name }, await readSite(s));
+    for (const s of SITES) if (!FAST_K.includes(s.k) || !state.sites[s.k]) state.sites[s.k] = Object.assign({ name: s.name }, await readSite(s));
     state.at = new Date().toISOString();
     state.needLogin = SITES.filter(s => state.sites[s.k] && !state.sites[s.k].ok).map(s => s.name);
     if (GAS && KEY) await gas({ op: 'set', path: 'live/web_now', data: state }).catch(e => console.log('gas', e.message));
+    await publishSales();
+    // مؤشرات بونات (عملاء/زيارات/تقييمات) في مستند مستقل للتطبيق
+    const bs = state.sites.bonat;
+    if (GAS && KEY && bs && bs.ok && bs.stats) await gas({ op: 'set', path: 'live/bonat_now', data: Object.assign({ at: bs.at }, bs.stats) }).catch(e => console.log('gas', e.message));
+  } finally { busy = false; }
+}
+async function publishSales() {
     // أرقام المبيعات كما تظهر حرفياً في لوحتي رتم وفودكس
     for (const k of ['retm', 'foodics']) { const st = state.sites[k]; const v = st && st.ok ? PARSE[k](st.text) : null; if (v) SALES[k] = Object.assign(v, { at: st.at }); }
     // سجل قراءات اليوم (كل 5 دقائق) لمقارنة «أمس في نفس الوقت» بدل أمس كاملًا
     try { const r = SALES.retm; if (r && r.revenue != null) { const n = new Date(Date.now() + 3 * 3600e3); const d = n.toISOString().slice(0, 10), hm = n.getUTCHours() * 60 + n.getUTCMinutes();
-      SLOG[d] = SLOG[d] || []; SLOG[d].push([hm, r.revenue, r.invoices || 0]); for (const k of Object.keys(SLOG)) if (k < new Date(Date.now() + 3 * 3600e3 - 3 * 864e5).toISOString().slice(0, 10)) delete SLOG[k];
+      SLOG[d] = SLOG[d] || []; const lastE = SLOG[d][SLOG[d].length - 1]; if (!lastE || hm - lastE[0] >= 4) SLOG[d].push([hm, r.revenue, r.invoices || 0]); for (const k of Object.keys(SLOG)) if (k < new Date(Date.now() + 3 * 3600e3 - 3 * 864e5).toISOString().slice(0, 10)) delete SLOG[k];
       const yd = new Date(Date.now() + 3 * 3600e3 - 864e5).toISOString().slice(0, 10); const Y = SLOG[yd] || []; let best = null; for (const e of Y) if (e[0] <= hm + 3) best = e;
       r.ySame = best ? { revenue: best[1], invoices: best[2], at: yd + ' ' + String(Math.floor(best[0] / 60)).padStart(2, '0') + ':' + String(best[0] % 60).padStart(2, '0') } : null;
       r.today = SLOG[d].map(e => [e[0], e[1]]); fs.writeFileSync(SLOGF, JSON.stringify(SLOG)); } } catch (e) { }
     SALES.at = new Date().toISOString();
     if (GAS && KEY && (SALES.retm || SALES.foodics)) await gas({ op: 'set', path: 'live/sales_now', data: SALES }).catch(e => console.log('gas', e.message));
-    // مؤشرات بونات (عملاء/زيارات/تقييمات) في مستند مستقل للتطبيق
-    const bs = state.sites.bonat;
-    if (GAS && KEY && bs && bs.ok && bs.stats) await gas({ op: 'set', path: 'live/bonat_now', data: Object.assign({ at: bs.at }, bs.stats) }).catch(e => console.log('gas', e.message));
-  } finally { busy = false; }
+}
+let fastBusy = false;
+async function fastSales() {   // فودكس ورتم وحدهما كل FAST_SEC ثانية (بدل 5 دقائق)
+  if (fastBusy || busy || !ctx) return;
+  if (viewers > 0 || Date.now() - lastView < 3 * 60e3) return;
+  fastBusy = true;
+  try {
+    for (const k of FAST_K) { const s = SITES.find(x => x.k === k); state.sites[k] = Object.assign({ name: s.name }, await readSite(s)); }
+    await publishSales();
+  } catch (e) { console.log('fast', e.message); } finally { fastBusy = false; }
 }
 async function launch() {
   ctx = await chromium.launchPersistentContext('/data/profile', {
@@ -458,7 +472,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, needLogin: state.needLogin || [] })); }
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [] })); }
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -475,6 +489,9 @@ const srv = http.createServer((req, res) => {
   }
   if (req.method === 'POST' && req.url === '/invoice/ingest') {   // من الناقل: ملف + سجل مفحوص (محمي بمفتاح)
     return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const j = JSON.parse(await readBody(req, 25e6) || '{}'); const rec = j.rec; if (!rec || !rec.id) throw new Error('bad'); if (j.b64) fs.writeFileSync(invFile(rec), Buffer.from(j.b64, 'base64')); await invIndexAdd(rec); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
+  }
+  if (req.method === 'POST' && req.url === '/mail') {   // من سكربت Gmail في حساب المحمصة (بمفتاح) → الناقل: مهام يومية + إشعار
+    return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const b = await readBody(req, 1e6); const r = await fetch(RELAY + '/mail', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': KEY }, body: b }); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(await r.text()); } catch (e) { res.writeHead(500); res.end(String(e.message || e)); } })();
   }
   if (req.url.startsWith('/staff/')) { staffRoute(req, res).catch(() => { try { res.writeHead(500); res.end(); } catch (e) {} }); return; }
   if (req.method === 'OPTIONS') { cors(req, res); res.writeHead(204); return res.end(); }
@@ -532,4 +549,4 @@ const srv = http.createServer((req, res) => {
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); }).catch(e => { console.error(e); process.exit(1); });

@@ -54,7 +54,7 @@ const SYS = `أنت تكتب مسودة رد واتساب لصاحب محمصة 
 {"reply":true,"kind":"قائمة أسعار|سعر محدد|وظيفة|عميل|مورد|موظف|حساب|أخرى","ask":"سطر واحد بما يطلبه","draft":"نص الرد","owner":"ما يحتاجه ضيف الله أو فارغ"}
 - «قائمة أسعار»: يطلب قائمة/أسعار الجملة عموماً. «سعر محدد»: يسأل عن سعر محصول أو كمية محددة — أجبه من الحقائق بالسعر المطابق للكمية.`;
 
-function setup({ gas, getBuf, lastErrRef }) {
+function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
   async function run(key) {
     pending.delete(key);
     if (!KEY) return;
@@ -97,7 +97,8 @@ function setup({ gas, getBuf, lastErrRef }) {
         d.items = (d.items || []).filter(x => !(x.src === 'live' && x.chat === name && x.st === 'new'));   // بند حي واحد لكل دردشة لم يُرد عليها
         if (d.items.some(x => x.mid === item.mid)) return;
         d.items.push(item); d.at = new Date().toISOString();
-        await gas({ op: 'set', path: 'live/inbox', data: d }); return;
+        await gas({ op: 'set', path: 'live/inbox', data: d });
+        push({ title: 'رسالة من ' + name, msg: (item.ask || '') + (owner ? '\nيحتاج منك: ' + owner : '\nالرد الجاهز في التطبيق'), lv: owner ? 'warn' : 'info', tag: 'incoming_envelope' }); return;
       } catch (e) { lastErr = 'inbox ' + e.message; await new Promise(r => setTimeout(r, 4000)); }
     }
   }
