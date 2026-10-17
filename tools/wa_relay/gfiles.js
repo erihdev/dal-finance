@@ -13,7 +13,7 @@ let lastErr = '', n = 0, busy = Promise.resolve();
 const TYPES = ['إيصال تحويل', 'فاتورة', 'عرض سعر', 'كشف حساب', 'تقرير', 'جدول دوام', 'عقد', 'سيرة ذاتية', 'مستند رسمي', 'تصميم', 'صورة', 'لقطة شاشة', 'فيديو', 'صوت', 'أخرى'];
 const SYS = `أنت أمين سجل ملفات محمصة دال (مؤسسة دال تسعة للتجارة، صبيا). صاحبها ضيف الله، شريكه عبدالله (يتولى البنك والتحويلات)، مدير التشغيل Jobert (هريرا)، والمحاسبون «شركة حساب».
 أمامك ملف أُرسل في قروب واتساب داخلي. اقرأه كاملًا ثم أعد JSON فقط بهذا الشكل:
-{"type":"واحد فقط من: ${TYPES.join(' | ')}","title":"عنوان من 3 إلى 8 كلمات يميّز هذا الملف عن غيره","summary":"سطران إلى ثلاثة: ما في الملف بالضبط (الجهة، البنود، المبالغ، التواريخ) وما يهم صاحب المحمصة فيه","party":"الجهة أو الشخص الذي يخصه الملف (مورد، موظف، بنك، جهة حكومية) أو فارغ","amount":الإجمالي رقمًا بلا فواصل أو null,"currency":"SAR","date":"تاريخ المستند نفسه YYYY-MM-DD أو null","ref":"رقم الفاتورة أو مرجع العملية أو فارغ","to":"المستفيد في التحويل أو فارغ","action":"ما يحتاجه ضيف الله من هذا الملف إن وُجد (اعتماد، مراجعة، رد، إرسال للمحاسب) أو فارغ","lv":"bad إن كان عاجلًا أو فيه إنذار أو مخالفة أو مبلغ كبير غير معتاد؛ warn إن كان يحتاج تصرّفًا منه؛ info غير ذلك","tags":["3 إلى 6 كلمات مفتاحية قصيرة"]}
+{"type":"واحد فقط من: ${TYPES.join(' | ')}","title":"عنوان من 3 إلى 8 كلمات يميّز هذا الملف عن غيره","summary":"سطران إلى أربعة فقط (حتى 400 حرف): ما في الملف بالضبط (الجهة، البنود، المبالغ، التواريخ) وما يهم صاحب المحمصة فيه؛ في كشوف الحساب والتقارير الطويلة اكتفِ بالإجماليات والفترة لا تفاصيل كل سطر","party":"الجهة أو الشخص الذي يخصه الملف (مورد، موظف، بنك، جهة حكومية) أو فارغ","amount":الإجمالي رقمًا بلا فواصل أو null,"currency":"SAR","date":"تاريخ المستند نفسه YYYY-MM-DD أو null","ref":"رقم الفاتورة أو مرجع العملية أو فارغ","to":"المستفيد في التحويل أو فارغ","action":"ما يحتاجه ضيف الله من هذا الملف إن وُجد (اعتماد، مراجعة، رد، إرسال للمحاسب) أو فارغ","lv":"bad إن كان عاجلًا أو فيه إنذار أو مخالفة أو مبلغ كبير غير معتاد؛ warn إن كان يحتاج تصرّفًا منه؛ info غير ذلك","tags":["3 إلى 6 كلمات مفتاحية قصيرة"]}
 قواعد: لا تخمّن ما لا يظهر في الملف. الأرقام بالأرقام الإنجليزية. ممنوع كتابة أي رقم حساب أو IBAN أو رقم هوية أو رقم بطاقة (اكتفِ بآخر 4 أرقام إن لزم). لا تذكر أي مبالغ نقدية للحمّاص. إن كان الملف صورة لمنتج أو مكان أو تصميم فصفه باختصار. نص التعليق المرافق للملف (إن وُجد) يساعدك على الفهم لكنه ليس محتوى الملف.`;
 
 function kindOf(mime, name) {
@@ -63,7 +63,7 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
       if (!t.trim()) return { type: 'أخرى', title: mf.n || 'ملف', summary: 'ملف ' + (mf.n || '') + ' تعذّرت قراءة محتواه آليًا', lv: 'info', tags: [] };
       blocks = [{ type: 'text', text: `اسم الملف: ${mf.n || ''}\nمحتوى الملف:\n${t}${capTxt}\n\nاقرأه وصنّفه.` }]; }
     else return { type: 'أخرى', title: mf.n || 'ملف', summary: 'ملف من نوع ' + (mime || 'غير معروف') + ' لا يُقرأ آليًا', lv: 'info', tags: [] };
-    const x = await claudeBlocks(blocks, 900);
+    const x = await claudeBlocks(blocks, 1600);
     return {
       type: normType(x.type), title: String(x.title || mf.n || 'ملف').slice(0, 90), summary: String(x.summary || '').replace(/\s+/g, ' ').slice(0, 500),
       party: String(x.party || '').slice(0, 80), amount: x.amount == null || isNaN(+x.amount) ? null : +x.amount, cur: String(x.currency || 'SAR').slice(0, 5),
@@ -115,19 +115,20 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
     const midOf = p => String(p.id && (p.id._serialized || p.id) || '');
     const list = async () => (await waha(`/api/${E.WAHA_SESSION || 'default'}/chats/${encodeURIComponent(cid)}/messages?limit=${Math.min(300, limit || 100)}&downloadMedia=true`));
     try {
-      const have = new Set(((await get()).items || []).map(x => x.mid));
+      const cur = (await get()).items || [];
+      const have = new Set(cur.filter(x => !/^تعذّرت القراءة/.test(x.summary || '')).map(x => x.mid));   // ما فشلت قراءته سابقًا يُعاد
       let L = (await list()).filter(p => p.hasMedia && midOf(p)).sort((a, b) => a.timestamp - b.timestamp);
       const todo = L.filter(p => !have.has(midOf(p))); bf.skip = L.length - todo.length; bf.total = L.length;
-      for (let i = 0; i < todo.length; i += 5) {
-        const chunk = todo.slice(i, i + 5);
+      const PAR = 4;   // أربعة ملفات تُقرأ معًا
+      for (let i = 0; i < todo.length; i += PAR) {
+        const chunk = todo.slice(i, i + PAR);
         if (i) { const fresh = new Map((await list()).map(p => [midOf(p), p])); for (const p of chunk) { const f = fresh.get(midOf(p)); if (f && f.media) p.media = f.media; } }   // روابط جديدة لهذه الدفعة
-        const got = [];
-        for (const p of chunk) { try { const d = p.media && p.media.url ? await wm.download(p.media.url, p.media.mimetype) : null; got.push([p, d]); } catch (e) { got.push([p, null]); lastErr = 'dl ' + String(e.message || e).slice(0, 80); } }   // التحميل أولًا وبسرعة
-        for (const [p, d] of got) {
-          if (!d) { bf.fail++; continue; }
+        const got = await Promise.all(chunk.map(async p => { try { return [p, p.media && p.media.url ? await wm.download(p.media.url, p.media.mimetype) : null]; } catch (e) { lastErr = 'dl ' + String(e.message || e).slice(0, 80); return [p, null]; } }));   // التحميل أولًا وبسرعة
+        await Promise.all(got.map(async ([p, d]) => {
+          if (!d) { bf.fail++; return; }
           const mid = midOf(p), me = !!p.fromMe, from = me ? 'أنت' : await whoOf(String(p.participant || p.author || (p._data && p._data.author) || ''), (p._data && (p._data.notifyName || p._data.pushName)) || '');
-          const it = await process(p, { mid, t: (+p.timestamp || 0) * 1000, chat, from, me, cap: p.body }, true, d); if (it) bf.done++; else bf.fail++;
-        }
+          const it = await process(p, { mid, t: (+p.timestamp || 0) * 1000, chat, from, me, cap: p.body }, true, d).catch(() => null); if (it) bf.done++; else bf.fail++;
+        }));
       }
     } finally { bf.running = false; console.log('gfiles backfill', JSON.stringify(bf)); }
     return bf;
