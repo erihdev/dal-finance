@@ -133,6 +133,7 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null, wm
     const ph0 = (fromBuf.find(m => m.ph) || {}).ph || (/^\d{9,15}$/.test(key) ? key : '');
     const hist = await history(ph0);
     const dup = (a, b) => a.id === b.id || (a.me === b.me && Math.abs(a.t - b.t) < 3000 && a.x === b.x);
+    for (const b of fromBuf) if (!b.mf && b.md) { const h = hist.find(x => x.mf && dup(b, x)); if (h) b.mf = h.mf; }   // مرفق ضاع من الذاكرة (إعادة تشغيل) نأخذه من سجل WAHA
     const msgs = fromBuf.concat(hist.filter(h => !fromBuf.some(b => dup(b, h)))).sort((a, b) => a.t - b.t).slice(-15);
     if (!msgs.length) return; const last = msgs[msgs.length - 1];
     if (last.me) { await markReplied(ph0, last.chat || (fromBuf[0] || {}).chat, 'تم الرد'); return; }     // ردّ بنفسه
@@ -193,6 +194,7 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null, wm
     // مراجعة البطاقات المفتوحة: ما رُد عليه يُعلَّم، والباقي يُعاد صياغته بالسياق الكامل (بلا إشعارات)
     async recheck() {
       const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data; if (!d || !Array.isArray(d.items)) return 0;
+      for (const it of d.items) for (const m of (it.media || [])) if (m && m.u && m.d && !mediaDesc.has(m.u)) mediaDesc.set(m.u, m.d);   // أوصاف قُرئت سابقًا: لا نقرأها مرة أخرى
       const keys = [...new Set(d.items.filter(x => x.st === 'new' && x.phone).map(x => x.phone))]; let n = 0;
       for (const k of keys) { await run(k, true).catch(e => { lastErr = 'recheck ' + e.message; }); n++; }
       console.log('recheck: chats', n, lastErr || '');

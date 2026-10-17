@@ -165,6 +165,16 @@ const srv = http.createServer((req, res) => {
     backfillMedia().then(n => { res.writeHead(200); res.end(JSON.stringify({ ok: true, n })); }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
     return;
   }
+  if (req.method === 'GET' && req.url.startsWith('/debug/hist')) {   // تشخيص: ما يعيده WAHA لدردشة خاصة (مرفقات؟) وما في الذاكرة
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    const ph = String(new URL(req.url, 'http://x').searchParams.get('ph') || '').replace(/\D/g, '');
+    waha(`/api/${E.WAHA_SESSION || 'default'}/chats/${encodeURIComponent(ph + '@c.us')}/messages?limit=15&downloadMedia=true`).then(ms => {
+      const h = (Array.isArray(ms) ? ms : []).map(m => ({ id: String(m.id && (m.id._serialized || m.id) || '').slice(-12), t: new Date((+m.timestamp || 0) * 1000).toISOString().slice(5, 16), me: !!m.fromMe, media: !!m.hasMedia, url: !!(m.media && m.media.url), mime: (m.media && m.media.mimetype) || '', err: (m.media && m.media.error) || '', x: String(m.body || '').slice(0, 40) }));
+      const b = buf.filter(m => !m.g && m.ph === ph).map(m => ({ id: m.id.slice(-12), t: new Date(m.t).toISOString().slice(5, 16), me: m.me, md: !!m.md, mf: !!m.mf, d: !!(m.mf && m.mf.d), x: String(m.x || '').slice(0, 30) }));
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ waha: h, buf: b }));
+    }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
+    return;
+  }
   if (req.method === 'POST' && req.url === '/push/test') {   // إشعار تجربة
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     pusher.reloadSubs().then(() => pusher.push({ title: 'دال', msg: 'تجربة الإشعارات ✅ ' + new Date().toLocaleTimeString('ar-SA-u-nu-latn', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Riyadh' }), lv: 'info', tag: 'white_check_mark' })).then(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(pusher.status())); });
