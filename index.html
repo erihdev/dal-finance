@@ -51,12 +51,9 @@ async function open(pk8,file){const e=await getJSON(file);
   const ds=new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'));
   return await new Response(ds).text();}
 async function boot(pk8){
-  const [app,liveTxt]=await Promise.all([open(pk8,'app.enc'),open(pk8,'live.enc').catch(()=>null)]);
-  if(liveTxt){try{const L=JSON.parse(liveTxt);
-    if(L.daily)localStorage.setItem('dal-daily-v1',JSON.stringify(L.daily));
-    if(L.applicants)localStorage.setItem('dal-hire-v1',JSON.stringify(L.applicants));
-    if(L.ls)Object.keys(L.ls).forEach(k=>{try{localStorage.setItem(k,JSON.stringify(L.ls[k]));}catch(e){}});}catch(e){}}
+  const app=await open(pk8,'app.enc');   // البيانات الحية كلها من قاعدة التطبيق، لا من live.enc القديم
   document.open();document.write(app);document.close();}
+if('serviceWorker' in navigator){try{navigator.serviceWorker.register('sw.js',{scope:'./'}).catch(()=>{});}catch(e){}}   // لإشعارات الجوال فقط
 const f=document.getElementById('f'),err=document.getElementById('err'),go=document.getElementById('go');
 f.addEventListener('submit',async ev=>{ev.preventDefault();err.textContent='';go.disabled=true;go.textContent='جارٍ الفتح…';
   try{const pk8=await privFromPw(document.getElementById('pw').value);

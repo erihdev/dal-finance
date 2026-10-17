@@ -46,10 +46,49 @@ async function claude(system, user) {
   return (j.content || []).map(c => c.text || '').join('');
 }
 
+async function claudeBlocks(system, blocks, maxTokens) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', headers: { 'x-api-key': KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens || 400, system, messages: [{ role: 'user', content: blocks }] }),
+  });
+  const j = await r.json(); if (!r.ok) throw new Error('claude ' + r.status + ' ' + JSON.stringify(j).slice(0, 200));
+  return (j.content || []).map(c => c.text || '').join('').trim();
+}
+// قراءة الصور والملفات التي يرسلها العميل قبل كتابة الرد: وصف قصير يدخل في سياق المحادثة
+const SYS_MEDIA = `هذا مرفق أرسله شخص في واتساب لمحمصة دال. صفه في سطر أو سطرين بالعربية بما يفيد كتابة الرد:
+- إيصال تحويل/دفع: المبلغ، التاريخ، اسم المستلم أو البنك إن ظهر. لا تكتب أي رقم حساب أو IBAN أو رقم هوية.
+- منتج أو كيس بن: اسمه ومحصوله إن ظهر، أو وصفه.
+- سيرة ذاتية: الاسم، المدينة، سنوات الخبرة، آخر عمل.
+- فاتورة أو عرض سعر: الجهة والإجمالي والتاريخ.
+- لقطة شاشة: ما تعرضه باختصار (تطبيق، رسالة خطأ، طلب…).
+- غير ذلك: ما هو. لا تخمّن ما لا يظهر. أعد الوصف فقط بلا مقدمات.`;
+const mediaDesc = new Map();   // رابط المرفق → وصفه (ذاكرة التشغيل)
+async function describeMedia(mf) {
+  if (!mf || !mf.u) return '';
+  if (mediaDesc.has(mf.u)) return mediaDesc.get(mf.u);
+  if (mf.k === 'aud') { mediaDesc.set(mf.u, 'رسالة صوتية (لا تُقرأ آليًا)'); return mediaDesc.get(mf.u); }
+  if (mf.k === 'vid') { mediaDesc.set(mf.u, 'فيديو (لا يُقرأ آليًا)'); return mediaDesc.get(mf.u); }
+  let d = '';
+  try {
+    const r = await fetch(mf.u); if (!r.ok) throw new Error('fetch ' + r.status);
+    const mime = String(r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase(); const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > 8e6) throw new Error('كبير');
+    const b64 = buf.toString('base64'); let block = null;
+    if (/^image\/(jpeg|png|webp|gif)$/.test(mime)) block = { type: 'image', source: { type: 'base64', media_type: mime, data: b64 } };
+    else if (mime === 'application/pdf') block = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } };
+    if (!block) { d = 'ملف ' + (mf.n || mime || '') + ' (نوع لا يُقرأ آليًا)'; }
+    else d = await claudeBlocks(SYS_MEDIA, [block, { type: 'text', text: 'صف هذا المرفق' + (mf.n ? ' (اسم الملف: ' + mf.n + ')' : '') + '.' }], 300);
+  } catch (e) { d = ''; lastErr = 'media ' + String(e.message || e).slice(0, 80); }
+  d = String(d || '').replace(/\s+/g, ' ').slice(0, 300);
+  if (d) mediaDesc.set(mf.u, d);
+  return d;
+}
+
 const SYS = `أنت تكتب مسودة رد واتساب لصاحب محمصة دال (ضيف الله) على رسالة عميل أو مورد أو متقدم لوظيفة. هو يراجعها ويرسلها بنفسه.
 قواعد صارمة:
 1) استخدم فقط المعلومات الموجودة في «الحقائق» أو في كلام الطرف الآخر. ممنوع أي سعر أو رقم أو موعد أو وعد أو معلومة غير موجودة فيهما.
 2) إن احتاج الرد معلومة غير موجودة (شحن، وقت توصيل، دفع آجل، خصم خاص، محصول غير مذكور...) فاكتب رداً مبدئياً قصيراً بدون تفاصيل، وضع المطلوب من ضيف الله في owner.
+2ب) ما بين [مرفق: …] هو وصف صورة أو ملف أرسله الطرف الآخر وقد قُرئ فعلاً: اعتمد عليه كأنه جزء من كلامه (إيصال تحويل بمبلغ كذا = وصل التحويل، سيرة ذاتية = وصلت سيرته…). لا تطلب منه ما ظهر في المرفق.
 3) لهجة سعودية مهذبة ومختصرة، سطران إلى أربعة. لا تذكر أنك ذكاء اصطناعي.
 4) لا تعرض محصولاً حالته «غير متوفر حالياً». ولا تذكر ويست أرسي أو سومطرا.
 5) إن لم تحتج الرسالة رداً (شكر، تأكيد، ملصق، تحية عابرة انتهت) فاجعل reply=false.
@@ -58,15 +97,23 @@ const SYS = `أنت تكتب مسودة رد واتساب لصاحب محمصة 
 {"reply":true,"kind":"قائمة أسعار|سعر محدد|وظيفة|عميل|مورد|موظف|حساب|أخرى","ask":"سطر واحد بما يطلبه","draft":"نص الرد","owner":"ما يحتاجه ضيف الله أو فارغ"}
 - «قائمة أسعار»: يطلب قائمة/أسعار الجملة عموماً. «سعر محدد»: يسأل عن سعر محصول أو كمية محددة — أجبه من الحقائق بالسعر المطابق للكمية.`;
 
-function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null }) {
+function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null, wm = null }) {
+  const histMedia = new Map();   // معرّف الرسالة → مرفقها المحفوظ
   const SESSION = E.WAHA_SESSION || 'default';
   // سجل المحادثة من WAHA نفسه: فيه ردود ضيف الله من الجوال حتى لو ما وصلت للناقل كحدث
   async function history(ph) {
     if (!waha || !ph) return [];
     try {
-      const ms = await waha(`/api/${SESSION}/chats/${encodeURIComponent(ph + '@c.us')}/messages?limit=15&downloadMedia=false`);
-      return (Array.isArray(ms) ? ms : []).map(m => ({ id: String(m.id && (m.id._serialized || m.id) || ''), t: (+m.timestamp || 0) * 1000, me: !!m.fromMe, ph,
-        x: String(m.body || '').trim() || (m.hasMedia ? '📎 مرفق' : '') })).filter(m => m.x);
+      const ms = await waha(`/api/${SESSION}/chats/${encodeURIComponent(ph + '@c.us')}/messages?limit=15&downloadMedia=true`);
+      const out = [];
+      for (const m of (Array.isArray(ms) ? ms : [])) {
+        const id = String(m.id && (m.id._serialized || m.id) || ''); if (!id) continue;
+        let mf;
+        if (!m.fromMe && m.hasMedia && wm) { if (histMedia.has(id)) mf = histMedia.get(id); else { mf = await wm.fromPayload(m); histMedia.set(id, mf || null); } }
+        const x = String(m.body || '').trim() || (m.hasMedia ? '📎 مرفق' : ''); if (!x) continue;
+        out.push({ id, t: (+m.timestamp || 0) * 1000, me: !!m.fromMe, ph, x, mf: mf || undefined });
+      }
+      return out;
     } catch (e) { return []; }
   }
   // بطاقة «لم يُرد» لهذه الدردشة تصير «تم الرد» (ردّ بنفسه، أو آخر رسالة لا تحتاج رداً)
@@ -91,7 +138,8 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null }) 
     if (last.me) { await markReplied(ph0, last.chat || (fromBuf[0] || {}).chat, 'تم الرد'); return; }     // ردّ بنفسه
     if (!last.chat) last.chat = (fromBuf[0] || {}).chat || key; if (!last.ph) last.ph = ph0;
     const st = staffOf(last.ph), name = st ? st.n : last.chat;
-    const conv = msgs.map(m => (m.me ? 'ضيف الله' : name) + ': ' + m.x).join('\n');
+    for (const m of msgs) if (!m.me && m.mf && !m.mf.d) { const d = await describeMedia(m.mf); if (d) m.mf.d = d; }   // نقرأ الصور والملفات أولًا
+    const conv = msgs.map(m => (m.me ? 'ضيف الله' : name) + ': ' + m.x + (m.mf && m.mf.d ? ' [مرفق: ' + m.mf.d + ']' : '')).join('\n');
     const F = (await facts(gas)) + (st ? `\n\nالمرسل موظف في دال: ${st.n} — ${st.r}.${st.s ? ' جدوله المسجّل في علو: ' + st.s + '.' : ' جدوله غير مسجّل عندي.'}${st.en ? ' يرد بالإنجليزي.' : ''}` : '');
     let out;
     for (let a = 0; a < 2 && !out; a++) {

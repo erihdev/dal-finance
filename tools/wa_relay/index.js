@@ -12,7 +12,7 @@ const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجمو
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
 const pusher = require('./push').setup({ gas: o => gas(o) });
 const wm = require('./wamedia').setup({ waha: (a, b) => waha(a, b), key: KEY });
-const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
+const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b), wm });
 const invoices = require('./invoices');
 const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
@@ -167,7 +167,7 @@ const srv = http.createServer((req, res) => {
   }
   if (req.method === 'POST' && req.url === '/push/test') {   // إشعار تجربة
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
-    pusher.push({ title: 'دال', msg: 'تجربة الإشعارات ✅', lv: 'info', tag: 'white_check_mark' }).then(() => { res.writeHead(200); res.end(JSON.stringify(pusher.status())); });
+    pusher.reloadSubs().then(() => pusher.push({ title: 'دال', msg: 'تجربة الإشعارات ✅ ' + new Date().toLocaleTimeString('ar-SA-u-nu-latn', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Riyadh' }), lv: 'info', tag: 'white_check_mark' })).then(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(pusher.status())); });
     return;
   }
   if (req.method === 'POST' && req.url === '/invoice/process') {   // من متصفح دال (رفع يدوي من التطبيق): يقرأ ويفحص ويحفظ
