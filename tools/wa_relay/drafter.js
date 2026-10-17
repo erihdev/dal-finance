@@ -16,6 +16,9 @@ const STATIC = `محمصة دال (مؤسسة دال تسعة للتجارة) �
 لا توجد في الحقائق معلومات عن: مدة التوصيل، رسوم الشحن، أوقات الدوام، الدفع الآجل، العينات المجانية — أي سؤال عنها يحتاج ضيف الله.`;
 
 const norm = s => String(s || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d));
+// الموظفون (من متغير STAFF_JSON في Railway، لا من الكود): رقم → {n: الاسم، r: الوظيفة، s: الدوام كما في علو، en: يرد بالإنجليزي}
+let STAFF = {}; try { STAFF = JSON.parse(E.STAFF_JSON || '{}'); } catch (e) {}
+const staffOf = ph => STAFF[String(ph || '').replace(/\D/g, '').replace(/^0(?=5)/, '966').replace(/^(?=5\d{8}$)/, '966')] || null;
 const nums = s => (norm(s).match(/\d+(?:[.,]\d+)*/g) || []).map(x => x.replace(/,/g, '')).map(x => String(+x));
 
 async function facts(gas) {
@@ -50,6 +53,7 @@ const SYS = `أنت تكتب مسودة رد واتساب لصاحب محمصة 
 3) لهجة سعودية مهذبة ومختصرة، سطران إلى أربعة. لا تذكر أنك ذكاء اصطناعي.
 4) لا تعرض محصولاً حالته «غير متوفر حالياً». ولا تذكر ويست أرسي أو سومطرا.
 5) إن لم تحتج الرسالة رداً (شكر، تأكيد، ملصق، تحية عابرة انتهت) فاجعل reply=false.
+6) إن كانت «الحقائق» تقول إن المرسل موظف في دال: kind=موظف، خاطبه باسمه الأول، وأجب عن الدوام والإجازة من جدوله المذكور بوضوح (الأيام والساعات). إن ذكر أن تطبيق علو يعرض غير ذلك فأكّد له جدوله الصحيح وضع في owner «راجع جدوله في علو». إن لم يُذكر جدوله فلا تخمّن وضعه في owner. إن قيل «يرد بالإنجليزي» فاكتب الرد بإنجليزية بسيطة.
 أعد JSON فقط بهذا الشكل بلا أي نص آخر:
 {"reply":true,"kind":"قائمة أسعار|سعر محدد|وظيفة|عميل|مورد|موظف|حساب|أخرى","ask":"سطر واحد بما يطلبه","draft":"نص الرد","owner":"ما يحتاجه ضيف الله أو فارغ"}
 - «قائمة أسعار»: يطلب قائمة/أسعار الجملة عموماً. «سعر محدد»: يسأل عن سعر محصول أو كمية محددة — أجبه من الحقائق بالسعر المطابق للكمية.`;
@@ -62,9 +66,9 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
     if (used >= MAX_DAY) { lastErr = 'حد الردود اليومي'; return; }
     const msgs = getBuf().filter(m => !m.g && (m.ph || m.chat) === key).sort((a, b) => a.t - b.t).slice(-15);
     if (!msgs.length) return; const last = msgs[msgs.length - 1]; if (last.me) return;     // ردّ بنفسه
-    const name = last.chat;
+    const st = staffOf(last.ph), name = st ? st.n : last.chat;
     const conv = msgs.map(m => (m.me ? 'ضيف الله' : name) + ': ' + m.x).join('\n');
-    const F = await facts(gas);
+    const F = (await facts(gas)) + (st ? `\n\nالمرسل موظف في دال: ${st.n} — ${st.r}.${st.s ? ' جدوله المسجّل في علو: ' + st.s + '.' : ' جدوله غير مسجّل عندي.'}${st.en ? ' يرد بالإنجليزي.' : ''}` : '');
     let out;
     for (let a = 0; a < 2 && !out; a++) {
       let raw = '';
@@ -76,6 +80,7 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
     if (!out || out.reply === false) return;
     let draft = String(out.draft || '').trim(), attach = '', owner = String(out.owner || '').trim(), checked = 'قالب';
     const first = name.split(' ')[0];
+    if (st) out.kind = 'موظف';   // موظف معروف: لا قوالب عملاء ولا وظائف
     if (out.kind === 'قائمة أسعار') { draft = T_PRICE; attach = 'wholesale'; out.kind = 'عرض سعر'; }
     else if (out.kind === 'وظيفة') draft = (msgs.some(m => !m.me && m.md) ? T_JOB_CV : T_JOB).replace('{n}', first);
     else {   // المدقق: كل رقم في الرد يجب أن يكون في الحقائق أو في كلام الطرف الآخر
@@ -88,14 +93,14 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
     }
     const when = 'اليوم ' + new Date(last.t).toLocaleTimeString('ar-SA-u-nu-latn', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Riyadh' });
     if (out.kind === 'سعر محدد') out.kind = 'عرض سعر';
-    const item = { id: 'live-' + last.id, mid: last.id, src: 'live', kind: out.kind || 'أخرى', from: name, chat: name, phone: last.ph || '', when, at: new Date(last.t).toISOString(),
+    const item = { id: 'live-' + last.id, mid: last.id, src: 'live', kind: out.kind || 'أخرى', from: name, chat: last.chat, phone: last.ph || '', when, at: new Date(last.t).toISOString(),
       ask: String(out.ask || '').slice(0, 200), draft, attach, st: 'new', su: new Date().toISOString(),
       media: msgs.some(m => !m.me && m.mf) ? msgs.filter(m => !m.me && m.mf).slice(-6).map(m => m.mf) : undefined,   // صور وملفات العميل
       p: owner ? 'يحتاج منك: ' + owner : 'رد جاهز لحظي (' + checked + ')' };
     for (let i = 0; i < 3; i++) {
       try {
         const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data || { items: [] };
-        d.items = (d.items || []).filter(x => !(x.src === 'live' && x.chat === name && x.st === 'new'));   // بند حي واحد لكل دردشة لم يُرد عليها
+        d.items = (d.items || []).filter(x => !(x.src === 'live' && x.chat === last.chat && x.st === 'new'));   // بند حي واحد لكل دردشة لم يُرد عليها
         if (d.items.some(x => x.mid === item.mid)) return;
         d.items.push(item); d.at = new Date().toISOString();
         await gas({ op: 'set', path: 'live/inbox', data: d });
