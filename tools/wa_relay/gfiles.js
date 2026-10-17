@@ -114,13 +114,17 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
   async function dedupe() {
     const r = { exact: 0, similar: 0, hashed: 0 };
     busy = busy.then(async () => {
-      const d = await get(); const L = (d.items || []).slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
+      let d = null; for (let a = 0; a < 6 && !d; a++) { try { d = await get(); } catch (e) { await new Promise(r => setTimeout(r, 5000)); } } if (!d) throw new Error('read');
+      const L = (d.items || []).slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
       for (const x of L) if (!x.h && x.u) { try { const q = await fetch(x.u); if (q.ok) { x.h = crypto.createHash('sha256').update(Buffer.from(await q.arrayBuffer())).digest('hex').slice(0, 24); r.hashed++; } } catch (e) {} }
       const first = new Map(), keep = [];
       for (const x of L) { if (x.h && first.has(x.h)) { const o = first.get(x.h); o.dups = [...new Set((o.dups || []).concat(x.mid, x.dups || []))].slice(-30); r.exact++; continue; } if (x.h) first.set(x.h, x); keep.push(x); }
       for (const x of keep) delete x.dupOf;
       for (let i = 0; i < keep.length; i++) { if (keep[i].dupOf) continue; for (let j = i + 1; j < keep.length; j++) if (!keep[j].dupOf && same(keep[i], keep[j])) { keep[j].dupOf = keep[i].mid; r.similar++; } }
-      d.items = keep.reverse(); d.at = new Date().toISOString(); d.n = d.items.length; await gas({ op: 'set', path: 'live/gfiles', data: d });
+      // ما وصل أثناء الحساب يُدمج قبل الكتابة
+      let cur = null; for (let a = 0; a < 6 && !cur; a++) { try { cur = await get(); } catch (e) { await new Promise(r => setTimeout(r, 5000)); } } if (!cur) throw new Error('read2');
+      const seenM = new Set(L.map(x => x.mid)); const fresh = (cur.items || []).filter(x => !seenM.has(x.mid));
+      d.items = fresh.concat(keep.reverse()); d.at = new Date().toISOString(); d.n = d.items.length; await gas({ op: 'set', path: 'live/gfiles', data: d });
       console.log('gfiles dedupe', JSON.stringify(r));
     }).catch(e => { lastErr = 'dedupe ' + e.message; });
     await busy; return r;
@@ -169,7 +173,7 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
           const it = await process(p, { mid, t: (+p.timestamp || 0) * 1000, chat, from, me, cap: p.body }, true, d).catch(() => null); if (it) bf.done++; else bf.fail++;
         }));
       }
-    } finally { bf.running = false; console.log('gfiles backfill', JSON.stringify(bf)); }
+    } finally { bf.running = false; console.log('gfiles backfill', JSON.stringify(bf)); setTimeout(() => dedupe().catch(() => {}), 5000); }
     return bf;
   }
   // ملف من تصدير محادثة واتساب (للأشهر التي انتهت روابطها): {chat, from, t, name, mime, b64}
