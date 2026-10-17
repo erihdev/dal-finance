@@ -147,7 +147,11 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null }) 
       const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data; if (!d || !Array.isArray(d.items)) return 0;
       const keys = [...new Set(d.items.filter(x => x.st === 'new' && x.phone).map(x => x.phone))]; let n = 0;
       for (const k of keys) { await run(k, true).catch(e => { lastErr = 'recheck ' + e.message; }); n++; }
-      console.log('recheck: chats', n, lastErr || ''); return n;
+      console.log('recheck: chats', n, lastErr || '');
+      try { const r2 = await gas({ op: 'get', paths: ['live/inbox'] }); const d2 = (r2.docs['live/inbox'] || {}).data || {}; const its = d2.items || [];   // تحقق: حالة البطاقات بعد المراجعة
+        const c = {}; for (const it of its) c[it.st] = (c[it.st] || 0) + 1; console.log('inbox after recheck:', JSON.stringify(c));
+        for (const it of its) { const sf = staffOf(it.phone); if (sf && it.st !== 'done') console.log('staff card:', sf.n, '|', it.st, '|', it.kind, '|', String(it.p || '').slice(0, 60), '|', String(it.draft || '').slice(0, 80).replace(/\n/g, ' ')); } } catch (e) { console.log('verify ERR', e.message); }
+      return n;
     },
   };
 }
