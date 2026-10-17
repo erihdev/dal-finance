@@ -58,14 +58,38 @@ const SYS = `أنت تكتب مسودة رد واتساب لصاحب محمصة 
 {"reply":true,"kind":"قائمة أسعار|سعر محدد|وظيفة|عميل|مورد|موظف|حساب|أخرى","ask":"سطر واحد بما يطلبه","draft":"نص الرد","owner":"ما يحتاجه ضيف الله أو فارغ"}
 - «قائمة أسعار»: يطلب قائمة/أسعار الجملة عموماً. «سعر محدد»: يسأل عن سعر محصول أو كمية محددة — أجبه من الحقائق بالسعر المطابق للكمية.`;
 
-function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
-  async function run(key) {
+function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null }) {
+  const SESSION = E.WAHA_SESSION || 'default';
+  // سجل المحادثة من WAHA نفسه: فيه ردود ضيف الله من الجوال حتى لو ما وصلت للناقل كحدث
+  async function history(ph) {
+    if (!waha || !ph) return [];
+    try {
+      const ms = await waha(`/api/${SESSION}/chats/${encodeURIComponent(ph + '@c.us')}/messages?limit=15&downloadMedia=false`);
+      return (Array.isArray(ms) ? ms : []).map(m => ({ id: String(m.id && (m.id._serialized || m.id) || ''), t: (+m.timestamp || 0) * 1000, me: !!m.fromMe, ph,
+        x: String(m.body || '').trim() || (m.hasMedia ? '📎 مرفق' : '') })).filter(m => m.x);
+    } catch (e) { return []; }
+  }
+  // بطاقة «لم يُرد» لهذه الدردشة تصير «تم الرد» (ردّ بنفسه، أو آخر رسالة لا تحتاج رداً)
+  async function markReplied(ph, chat, note) {
+    try {
+      const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data; if (!d || !Array.isArray(d.items)) return;
+      let ch = false; for (const it of d.items) if (it.st === 'new' && ((ph && it.phone === ph) || it.chat === chat)) { it.st = 'sent'; it.su = new Date().toISOString(); it.p = note; ch = true; }
+      if (ch) { d.at = new Date().toISOString(); await gas({ op: 'set', path: 'live/inbox', data: d }); }
+    } catch (e) { lastErr = 'mark ' + e.message; }
+  }
+  async function run(key, quiet) {
     pending.delete(key);
     if (!KEY) return;
     const today = new Date().toISOString().slice(0, 10); if (today !== day) { day = today; used = 0; }
     if (used >= MAX_DAY) { lastErr = 'حد الردود اليومي'; return; }
-    const msgs = getBuf().filter(m => !m.g && (m.ph || m.chat) === key).sort((a, b) => a.t - b.t).slice(-15);
-    if (!msgs.length) return; const last = msgs[msgs.length - 1]; if (last.me) return;     // ردّ بنفسه
+    const fromBuf = getBuf().filter(m => !m.g && (m.ph || m.chat) === key);
+    const ph0 = (fromBuf.find(m => m.ph) || {}).ph || (/^\d{9,15}$/.test(key) ? key : '');
+    const hist = await history(ph0);
+    const dup = (a, b) => a.id === b.id || (a.me === b.me && Math.abs(a.t - b.t) < 3000 && a.x === b.x);
+    const msgs = fromBuf.concat(hist.filter(h => !fromBuf.some(b => dup(b, h)))).sort((a, b) => a.t - b.t).slice(-15);
+    if (!msgs.length) return; const last = msgs[msgs.length - 1];
+    if (last.me) { await markReplied(ph0, last.chat || (fromBuf[0] || {}).chat, 'تم الرد'); return; }     // ردّ بنفسه
+    if (!last.chat) last.chat = (fromBuf[0] || {}).chat || key; if (!last.ph) last.ph = ph0;
     const st = staffOf(last.ph), name = st ? st.n : last.chat;
     const conv = msgs.map(m => (m.me ? 'ضيف الله' : name) + ': ' + m.x).join('\n');
     const F = (await facts(gas)) + (st ? `\n\nالمرسل موظف في دال: ${st.n} — ${st.r}.${st.s ? ' جدوله المسجّل في علو: ' + st.s + '.' : ' جدوله غير مسجّل عندي.'}${st.en ? ' يرد بالإنجليزي.' : ''}` : '');
@@ -77,7 +101,7 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
       catch (e) { lastErr = 'draft ' + e.message + ' :: ' + raw.slice(0, 160); }
     }
     if (!out) return;
-    if (!out || out.reply === false) return;
+    if (out.reply === false) { await markReplied(last.ph, last.chat, 'لا يحتاج رد'); return; }
     let draft = String(out.draft || '').trim(), attach = '', owner = String(out.owner || '').trim(), checked = 'قالب';
     const first = name.split(' ')[0];
     if (st) out.kind = 'موظف';   // موظف معروف: لا قوالب عملاء ولا وظائف
@@ -100,11 +124,13 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
     for (let i = 0; i < 3; i++) {
       try {
         const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data || { items: [] };
-        d.items = (d.items || []).filter(x => !(x.src === 'live' && x.chat === last.chat && x.st === 'new'));   // بند حي واحد لكل دردشة لم يُرد عليها
+        const old = (d.items || []).filter(x => x.src === 'live' && x.chat === last.chat && x.st === 'new');
+        if (!item.media) { const om = old.find(x => x.media); if (om) item.media = om.media; }   // نحتفظ بمرفقات البطاقة السابقة
+        d.items = (d.items || []).filter(x => !old.includes(x));   // بند حي واحد لكل دردشة لم يُرد عليها
         if (d.items.some(x => x.mid === item.mid)) return;
         d.items.push(item); d.at = new Date().toISOString();
         await gas({ op: 'set', path: 'live/inbox', data: d });
-        push({ title: 'رسالة من ' + name, msg: (item.ask || '') + (owner ? '\nيحتاج منك: ' + owner : '\nالرد الجاهز في التطبيق'), lv: owner ? 'warn' : 'info', tag: 'incoming_envelope' }); return;
+        if (!quiet) push({ title: 'رسالة من ' + name, msg: (item.ask || '') + (owner ? '\nيحتاج منك: ' + owner : '\nالرد الجاهز في التطبيق'), lv: owner ? 'warn' : 'info', tag: 'incoming_envelope' }); return;
       } catch (e) { lastErr = 'inbox ' + e.message; await new Promise(r => setTimeout(r, 4000)); }
     }
   }
@@ -116,6 +142,13 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
       pending.set(key, setTimeout(() => run(key).catch(e => { lastErr = String(e.message || e); }), WAIT));
     },
     status() { return { model: MODEL, enabled: !!KEY, used, max: MAX_DAY, lastErr }; },
+    // مراجعة البطاقات المفتوحة: ما رُد عليه يُعلَّم، والباقي يُعاد صياغته بالسياق الكامل (بلا إشعارات)
+    async recheck() {
+      const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data; if (!d || !Array.isArray(d.items)) return 0;
+      const keys = [...new Set(d.items.filter(x => x.st === 'new' && x.phone).map(x => x.phone))]; let n = 0;
+      for (const k of keys) { await run(k, true).catch(e => { lastErr = 'recheck ' + e.message; }); n++; }
+      console.log('recheck: chats', n, lastErr || ''); return n;
+    },
   };
 }
 module.exports = { setup, nums, norm };

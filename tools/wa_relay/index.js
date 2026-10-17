@@ -12,7 +12,7 @@ const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجمو
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
 const pusher = require('./push').setup({ gas: o => gas(o) });
 const wm = require('./wamedia').setup({ waha: (a, b) => waha(a, b), key: KEY });
-const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push });
+const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
 const invoices = require('./invoices');
 const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
@@ -91,7 +91,8 @@ let seeded = false;
 async function seed() {   // لا نكتب فوق الأرشيف قبل قراءته (حتى لا يضيع عند إعادة التشغيل)؛ نعيد المحاولة حتى تنجح ثم ندمج
   for (let i = 0; i < 20 && !seeded; i++) {
     try { const r = await gas({ op: 'get', paths: ['live/wa_live'] }); const d = r.docs && r.docs['live/wa_live']; const old = (d && d.data && Array.isArray(d.data.msgs)) ? d.data.msgs : [];
-      const ids = new Set(buf.map(m => m.id)); for (const m of old) if (!ids.has(m.id)) buf.push(m); seeded = true; if (buf.length) schedule(); }
+      const ids = new Set(buf.map(m => m.id)); for (const m of old) if (!ids.has(m.id)) buf.push(m); seeded = true; if (buf.length) schedule();
+      const day = Date.now() - 864e5, pv = buf.filter(m => !m.g && m.t > day); console.log('seed: private last 24h — mine', pv.filter(m => m.me).length, 'theirs', pv.filter(m => !m.me).length); }   // تشخيص: هل تصل ردودي؟
     catch (e) { lastErr = 'seed ' + e.message; await new Promise(ok => setTimeout(ok, 15000)); }
   }
 }
@@ -199,6 +200,7 @@ async function backfillMedia() {
   }
   return n;
 }
+setTimeout(() => drafter.recheck().catch(e => console.log('recheck ERR', e.message)), 150e3);   // بعد التشغيل: البطاقات المفتوحة بالسياق الكامل
 const bf = () => backfillMedia().catch(e => { lastErr = 'backfill ' + e.message; console.log('backfill ERR', e.message); });
 setTimeout(bf, 60e3); setInterval(bf, 30 * 60e3);
 
