@@ -93,6 +93,40 @@ function setup({ gas, getBuf, push = async () => {} }) {
     runs.rt++;
   }
 
+  // ---------- 2ب) بقية القروبات (التشغيل، حساب، الموردون...): ما يحتاج قرار ضيف الله + أحداث اليوم ----------
+  const SYS_G = `تقرأ رسائل قروب واتساب يخص محمصة دال (صاحبها ضيف الله). المطلوب:
+- open: ما يحتاج تصرّفًا أو قرارًا من ضيف الله تحديدًا (اعتماد، دفع، رد مطلوب منه، موافقة، مستند يطلبه أحد منه). {"mid":"معرّف الرسالة","t":"سطر واحد: من يطلب وماذا، بالأرقام إن ذُكرت","lv":"bad إن كان عاجلًا أو فيه موعد قريب وإلا warn"}
+- items: أحداث جديرة بالذكر في القروب (تم تسليم، أُرسل ملف مهم، تم دفع، مشكلة تشغيل) {"mid":"…","t":"سطر قصير: من وماذا"}
+قواعد: لا تخترع. ما لم يُذكر صراحة لا يُكتب. تجاهل التحيات والملصقات والصور بلا سياق. لا تذكر أي مبالغ نقدية للحمّاص. لا أرقام هوية أو حسابات بنكية.
+ما كتبه ضيف الله نفسه ليس «مطلوبًا منه». أعد JSON فقط: {"open":[],"items":[]}`;
+  const isDal = n => /dal|دال|hesab|حساب|lofan|لوفان|roast|تحميص|مشتريات|مورد/i.test(String(n)) || (E.DAL_GROUPS || '').split(',').map(x => x.trim()).includes(String(n));   // قروبات المحمصة فقط (لا المنتديات العامة)
+  const gLast = {};   // آخر معرّف عولج لكل قروب حتى لا نعيد قراءة الرسائل نفسها
+  async function runGroup(name) {
+    const all = groupMsgs(name); if (!all.length || !AKEY) return;
+    const idx = gLast[name] ? all.findIndex(m => m.id === gLast[name]) : -1;
+    const fresh = all.slice(idx + 1).filter(m => !m.me && (idx >= 0 || m.t > Date.now() - 2 * 3600e3));   // بعد إعادة التشغيل: آخر ساعتين فقط
+    if (!fresh.length) { gLast[name] = all[all.length - 1].id; return; }
+    const ctx = all.slice(Math.max(0, idx + 1 - 10));   // سياق قصير قبل الجديد
+    const out = await claude(SYS_G, 'القروب: ' + name + '\nالرسائل الجديدة هي ذوات المعرّفات: ' + fresh.map(m => m.id).join(', ') + '\n\n' + conv(ctx));
+    gLast[name] = all[all.length - 1].id;
+    const byId = new Map(fresh.map(m => [m.id, m]));
+    const opens = (out.open || []).filter(x => byId.has(x.mid)).map(x => ({ t: `${name}: ${String(x.t).slice(0, 200)}`, who: 'ضيف الله', since: arDate(new Date(byId.get(x.mid).t)), lv: x.lv === 'bad' ? 'bad' : 'warn', k: 'wao:' + x.mid }));
+    await addOpen(opens);
+    await addDaily((out.items || []).filter(x => byId.has(x.mid)).map(x => ({ src: 'واتساب', t: `${name}: ${String(x.t).slice(0, 200)}`, s: hm(byId.get(x.mid).t), lv: 'info', k: 'wa:' + x.mid })));
+    runs.groups = (runs.groups || 0) + 1;
+  }
+  let openBusy = Promise.resolve();
+  function addOpen(list) {   // بنود «ينتظر تصرّفًا» بلا تكرار (بالمفتاح k)، مع إشعار
+    if (!list.length) return Promise.resolve();
+    openBusy = openBusy.then(async () => {
+      const d = (await get('daily')) || {}; d.open = d.open || [];
+      const keys = new Set(d.open.map(x => x.k).filter(Boolean)); const fresh = list.filter(x => !keys.has(x.k)); if (!fresh.length) return;
+      d.open = fresh.concat(d.open).slice(0, 80); d.at = new Date().toISOString(); await set('daily', d);
+      for (const x of fresh) push({ title: 'يحتاج قرارك', msg: x.t, lv: x.lv, tag: 'pushpin' });
+    }).catch(e => { lastErr = 'open ' + e.message; });
+    return openBusy;
+  }
+
   // ---------- 3) حالة الردود الجاهزة ----------
   let inboxBusy = Promise.resolve();
   function onPrivate(m) {
@@ -158,7 +192,7 @@ function setup({ gas, getBuf, push = async () => {} }) {
       const d = (await get('daily')) || {}; d.items = d.items || [];
       const keys = new Set(d.items.map(x => x.k).filter(Boolean)); const fresh = items.filter(x => !keys.has(x.k)); if (!fresh.length) return;
       d.items = fresh.concat(d.items).slice(0, 120); d.at = new Date().toISOString(); await set('daily', d);
-      for (const x of fresh) push({ title: x.src || 'دال', msg: x.t, lv: x.lv, tag: x.src === 'الإيميل' ? 'email' : 'bell' });
+      for (const x of fresh) if (x.lv && x.lv !== 'info') push({ title: x.src || 'دال', msg: x.t, lv: x.lv, tag: x.src === 'الإيميل' ? 'email' : 'bell' });   // الإشعار للمهم فقط؛ العادي يظهر في التطبيق
     }).catch(e => { lastErr = 'daily ' + e.message; });
     return dailyBusy;
   }
@@ -170,9 +204,10 @@ function setup({ gas, getBuf, push = async () => {} }) {
     onMessage(m) {
       if (m.g && m.chat === SLOW_GROUP) debounce('slow', runSlow);
       else if (m.g && m.chat === RT_GROUP) debounce('rt', runRt);
-      else if (!m.g) onPrivate(m);
+      else if (m.g) { if (!m.me && isDal(m.chat)) debounce('g:' + m.chat, () => runGroup(m.chat)); }
+      else onPrivate(m);
     },
-    runSlow, runRt, runReminders, dueReminders, addDaily,
+    runSlow, runRt, runReminders, dueReminders, addDaily, addOpen, runGroup,
     status() { return { model: MODEL, enabled: !!AKEY, runs, lastErr }; },
   };
 }

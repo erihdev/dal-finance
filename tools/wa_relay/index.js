@@ -48,6 +48,17 @@ async function pnOf(jid) {   // واتساب يستخدم معرّفات @lid ب
   pn = pn ? pn.replace('@s.whatsapp.net', '@c.us') : jid; pnCache.set(jid, pn); return pn;
 }
 const digits = s => String(s || '').split('@')[0].replace(/\D/g, '');
+// رقم حساب المحمصة نفسه (حتى لا نحسب رسائلي الصادرة على اسمي أنا): من WAHA عند التشغيل
+let SELF = '';
+async function loadSelf() { for (let i = 0; i < 10 && !SELF; i++) { try { const s = await waha(`/api/sessions/${SESSION}`); const id = s && s.me && (s.me.id || s.me.jid || ''); SELF = digits(id); if (SELF) console.log('self ok'); } catch (e) {} if (!SELF) await new Promise(ok => setTimeout(ok, 20000)); } }
+loadSelf();
+let shapeLogged = false;
+function chatIdOf(p, me) {   // معرّف الدردشة: للرسائل الصادرة قد يغيب p.to في بعض محركات WAHA
+  const cands = me ? [p.to, p.chatId, p._data && p._data.to, p._data && p._data.key && p._data.key.remoteJid, p.from] : [p.from, p.chatId];
+  for (const c of cands) { const v = typeof c === 'string' ? c : (c && (c._serialized || c.id)); if (!v || v === 'undefined') continue; if (me && SELF && digits(v) === SELF && !/@g\.us$/.test(v)) continue; return String(v); }
+  if (me && !shapeLogged) { shapeLogged = true; console.log('fromMe shape:', Object.keys(p).join(','), '_data:', Object.keys(p._data || {}).join(',')); }
+  return '';
+}
 function mediaLabel(p) {
   const m = (p.media && p.media.mimetype) || (p._data && p._data.type) || '';
   if (/image/.test(m)) return '📷 صورة'; if (/video/.test(m)) return '🎥 فيديو'; if (/audio|ptt/.test(m)) return '🎤 رسالة صوتية';
@@ -55,11 +66,11 @@ function mediaLabel(p) {
   if (/sticker/.test(m)) return 'ملصق'; return '📎 مرفق';
 }
 async function onMsg(p) {
-  const me = !!p.fromMe; let cid = String(me ? p.to : p.from || ''); cid = await pnOf(cid);
+  const me = !!p.fromMe; let cid = chatIdOf(p, me); if (!cid) return; cid = await pnOf(cid);
   if (!cid || /status@broadcast|@newsletter|@broadcast/.test(cid)) return;
   const isGroup = cid.endsWith('@g.us');
   const pushName = (p._data && (p._data.pushName || p._data.notifyName)) || p.notifyName || '';
-  const chat = await chatName(cid, isGroup, isGroup ? '' : pushName);
+  const chat = await chatName(cid, isGroup, (isGroup || me) ? '' : pushName);   // pushName في رسالتي الصادرة هو اسمي أنا
   if (EXCLUDE.some(x => x === chat || x === digits(cid))) return;
   if (isGroup && GROUPS.length && !GROUPS.includes(chat)) return;
   if (p.hasMedia && isGroup) invoices.onMedia(p, chat, me ? 'أنت' : (pushName || digits(await pnOf(String(p.participant || p.author || '')))), waha);
@@ -91,7 +102,7 @@ let seeded = false;
 async function seed() {   // لا نكتب فوق الأرشيف قبل قراءته (حتى لا يضيع عند إعادة التشغيل)؛ نعيد المحاولة حتى تنجح ثم ندمج
   for (let i = 0; i < 20 && !seeded; i++) {
     try { const r = await gas({ op: 'get', paths: ['live/wa_live'] }); const d = r.docs && r.docs['live/wa_live']; const old = (d && d.data && Array.isArray(d.data.msgs)) ? d.data.msgs : [];
-      const ids = new Set(buf.map(m => m.id)); for (const m of old) if (!ids.has(m.id)) buf.push(m); seeded = true; if (buf.length) schedule();
+      const ids = new Set(buf.map(m => m.id)); for (const m of old) if (!ids.has(m.id) && !(m.me && !m.g && !m.ph)) buf.push(m); seeded = true; if (buf.length) schedule();   // نُسقط رسائلي الصادرة القديمة بلا رقم (كانت تُنسب لاسمي)
       const day = Date.now() - 864e5, pv = buf.filter(m => !m.g && m.t > day); console.log('seed: private last 24h — mine', pv.filter(m => m.me).length, 'theirs', pv.filter(m => !m.me).length); }   // تشخيص: هل تصل ردودي؟
     catch (e) { lastErr = 'seed ' + e.message; await new Promise(ok => setTimeout(ok, 15000)); }
   }
