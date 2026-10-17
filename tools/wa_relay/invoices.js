@@ -56,7 +56,7 @@ async function onMedia(p, chatName, from, waha) {   // من ناقل واتسا�
     if (!wantsChat(chatName)) return;
     const mime = (p.media && p.media.mimetype) || ''; if (!/image\/(jpeg|png|webp)|pdf/i.test(mime)) return;
     let url = p.media && p.media.url; if (!url) return;
-    const r = await waha(url, true); if (!r.ok) throw new Error('media ' + r.status);
+    const r = await waha(String(url).replace(/^https?:\/\/[^/]+/, ''), true); if (!r.ok) throw new Error('media ' + r.status);   // رابط WAHA على localhost → العنوان الداخلي
     const buf = Buffer.from(await r.arrayBuffer()); if (buf.length > 12e6) return;
     const id = String(p.id && (p.id._serialized || p.id.id || p.id) || Date.now()).replace(/[^A-Za-z0-9_-]/g, '').slice(-24);
     await processInvoice(buf.toString('base64'), /pdf/i.test(mime) ? 'application/pdf' : mime.toLowerCase(), { id, chat: chatName, from, name: (p._data && p._data.fileName) || '', src: 'wa' });

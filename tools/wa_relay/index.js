@@ -200,5 +200,5 @@ async function backfillMedia() {
   return n;
 }
 const bf = () => backfillMedia().catch(e => { lastErr = 'backfill ' + e.message; console.log('backfill ERR', e.message); });
-setTimeout(bf, 240e3); setInterval(bf, 30 * 60e3);
+setTimeout(bf, 60e3); setInterval(bf, 30 * 60e3);
 

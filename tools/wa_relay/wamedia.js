@@ -14,15 +14,17 @@ function setup({ waha, key }) {
   async function save(url, mime, name) {
     try {
       if (!url) return null;
-      const r = await waha(url, true); if (!r.ok) throw new Error('media ' + r.status);
+      // WAHA يكتب رابط الملف على localhost؛ نأخذ المسار فقط ونطلبه من عنوان WAHA الداخلي
+      let r; try { r = await waha(String(url).replace(/^https?:\/\/[^/]+/, ''), true); } catch (e) { throw new Error('waha-fetch ' + e.message); }
+      if (!r.ok) throw new Error('media ' + r.status);
       const buf = Buffer.from(await r.arrayBuffer()); if (!buf.length || buf.length > MAX) return null;
       mime = mime || r.headers.get('content-type') || 'application/octet-stream';
       const id = crypto.randomBytes(16).toString('hex');
       const w = await fetch(BROWSER + '/wa/media/ingest', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': key },
-        body: JSON.stringify({ id, mime, name: name || '', b64: buf.toString('base64') }) });
+        body: JSON.stringify({ id, mime, name: name || '', b64: buf.toString('base64') }) }).catch(e => { throw new Error('ingest-fetch ' + e.message); });
       if (!w.ok) throw new Error('ingest ' + w.status);
       saved++; return { u: PUBLIC + '/wa/m/' + id, k: kindOf(mime), n: String(name || '').slice(0, 80) };
-    } catch (e) { lastErr = String(e.message || e).slice(0, 160); return null; }
+    } catch (e) { lastErr = String(e.message || e).slice(0, 160); console.log('wamedia', lastErr); return null; }
   }
   const fromPayload = p => save(p.media && p.media.url, p.media && p.media.mimetype, (p.media && p.media.filename) || (p._data && p._data.filename) || '');
   return { save, fromPayload, status: () => ({ saved, lastErr }) };
