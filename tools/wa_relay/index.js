@@ -11,6 +11,7 @@ const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجموعات
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
 const pusher = require('./push').setup({ gas: o => gas(o) });
+const wm = require('./wamedia').setup({ waha: (a, b) => waha(a, b), key: KEY });
 const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push });
 const invoices = require('./invoices');
 const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push });
@@ -63,12 +64,13 @@ async function onMsg(p) {
   if (isGroup && GROUPS.length && !GROUPS.includes(chat)) return;
   if (p.hasMedia && isGroup) invoices.onMedia(p, chat, me ? 'أنت' : (pushName || digits(await pnOf(String(p.participant || p.author || '')))), waha);
   const text = String(p.body || '').trim() || (p.hasMedia ? mediaLabel(p) : '');
+  const mf = !isGroup && !me && p.hasMedia ? await wm.fromPayload(p) : null;   // المرفق يظهر في بطاقة الرد بالتطبيق
   if (!text) return;
   const id = String(p.id && (p.id._serialized || p.id.id || p.id) || cid + ':' + p.timestamp);
   if (buf.some(x => x.id === id)) return;
   buf.push({ id, t: (+p.timestamp || Date.now() / 1000) * 1000, chat, g: isGroup, ph: isGroup ? '' : digits(cid),
     from: me ? 'أنت' : (isGroup ? (pushName || digits(await pnOf(String(p.participant || p.author || '')))) : chat), me, x: text.slice(0, 700),
-    q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined });
+    q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined, mf: mf || undefined });
   schedule();
   try { drafter.onMessage(buf[buf.length - 1]); } catch (e) { lastErr = 'drafter ' + e.message; }
   try { jobs.onMessage(buf[buf.length - 1]); } catch (e) { lastErr = 'jobs ' + e.message; }
@@ -128,7 +130,7 @@ async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['
 setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
-  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status() })); }
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status(), media: wm.status() })); }
   if (req.method === 'POST' && /^\/jobs\/(slow|rt|remind)$/.test(req.url)) {   // تشغيل يدوي للتجربة
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     const k = req.url.split('/').pop(); ({ slow: jobs.runSlow, rt: jobs.runRt, remind: jobs.runReminders })[k]().then(() => { res.writeHead(200); res.end('ok'); }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
@@ -144,6 +146,11 @@ const srv = http.createServer((req, res) => {
         .map(m => ({ src: 'الإيميل', t: ((m.from || m.email || '') + ': ' + (m.subject || '(بلا عنوان)')).slice(0, 200) + (m.summary ? ' — ' + String(m.summary).slice(0, 140) : ''), s: m.when || '', lv: IMP.test((m.subject || '') + ' ' + (m.summary || '')) ? 'warn' : 'info', k: 'mail:' + m.id }));
       await jobs.addDaily(items); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, n: items.length }));
     } catch (e) { res.writeHead(500); res.end(String(e.message)); } });
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/media/backfill') {   // مرفقات البطاقات المفتوحة الحالية
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    backfillMedia().then(n => { res.writeHead(200); res.end(JSON.stringify({ ok: true, n })); }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
     return;
   }
   if (req.method === 'POST' && req.url === '/push/test') {   // إشعار تجربة
@@ -168,3 +175,28 @@ const srv = http.createServer((req, res) => {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('relay up'));
 seed();
 process.on('SIGTERM', async () => { await flush(); process.exit(0); });
+
+// مرفقات البطاقات المفتوحة التي وصلت قبل تفعيل حفظ المرفقات: نجلبها من WAHA مرة واحدة
+async function backfillMedia() {
+  const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data; if (!d || !Array.isArray(d.items)) return 0;
+  let n = 0;
+  for (const it of d.items) {
+    if (it.st === 'done' || it.media || !it.phone) continue;
+    let ms = []; try { ms = await waha(`/api/${SESSION}/chats/${encodeURIComponent(it.phone + '@c.us')}/messages?limit=20&downloadMedia=true`); } catch (e) { continue; }
+    const since = (Date.parse(it.at || 0) || 0) - 2 * 864e5; const out = [];
+    for (const m of (Array.isArray(ms) ? ms : []).sort((a, b) => a.timestamp - b.timestamp)) {
+      if (m.fromMe || !m.hasMedia || m.timestamp * 1000 < since) continue;
+      const f = await wm.fromPayload(m); if (f) out.push(f);
+    }
+    if (out.length) { it.media = out.slice(-6); n++; }
+  }
+  if (n) {   // نعيد القراءة قبل الكتابة حتى لا نمسح تغييرات حدثت أثناء التحميل
+    const r2 = await gas({ op: 'get', paths: ['live/inbox'] }); const d2 = (r2.docs['live/inbox'] || {}).data || { items: [] };
+    const by = new Map(d.items.filter(x => x.media).map(x => [x.id, x.media]));
+    for (const it of d2.items || []) if (!it.media && by.has(it.id)) it.media = by.get(it.id);
+    d2.at = new Date().toISOString(); await gas({ op: 'set', path: 'live/inbox', data: d2 });
+  }
+  return n;
+}
+setTimeout(() => backfillMedia().catch(e => { lastErr = 'backfill ' + e.message; }), 120e3);
+

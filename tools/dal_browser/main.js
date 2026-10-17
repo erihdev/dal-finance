@@ -10,6 +10,7 @@ let SALES = { at: null };
 const E = process.env; const fs = require('fs');
 const USER = E.VIEW_USER || 'dal', PASS = E.VIEW_PASSWORD || '';
 const GAS = E.GAS_URL, KEY = E.DAL_KEY, POLL = (+E.POLL_MIN || 5) * 60e3;
+const WMDIR = '/data/wamedia';   // مرفقات واتساب الخاصة (تُحذف بعد 45 يومًا)
 const FAST = Math.max(30, +E.FAST_SEC || 60) * 1000, FAST_K = ['foodics', 'retm'];   // أرقام المبيعات كل دقيقة
 const SITES = [
   { k: 'foodics', name: 'فودكس', url: 'https://console.foodics.com/', login: /login|auth|signin/i },
@@ -493,6 +494,19 @@ const srv = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/mail') {   // من سكربت Gmail في حساب المحمصة (بمفتاح) → الناقل: مهام يومية + إشعار
     return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const b = await readBody(req, 1e6); const r = await fetch(RELAY + '/mail', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': KEY }, body: b }); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(await r.text()); } catch (e) { res.writeHead(500); res.end(String(e.message || e)); } })();
   }
+  if (req.method === 'POST' && req.url === '/wa/media/ingest') {   // من الناقل: مرفق رسالة واتساب خاصة (محمي بمفتاح)
+    return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+      const j = JSON.parse(await readBody(req, 30e6) || '{}'); const id = String(j.id || '').replace(/[^a-f0-9]/g, ''); if (id.length < 24 || !j.b64) throw new Error('bad');
+      fs.mkdirSync(WMDIR, { recursive: true }); fs.writeFileSync(WMDIR + '/' + id, Buffer.from(j.b64, 'base64')); fs.writeFileSync(WMDIR + '/' + id + '.json', JSON.stringify({ mime: String(j.mime || 'application/octet-stream').slice(0, 100), name: String(j.name || '').slice(0, 150), at: Date.now() }));
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); } catch (e) { res.writeHead(500); res.end(String(e.message || e)); } })();
+  }
+  if (req.method === 'GET' && req.url.startsWith('/wa/m/')) {   // عرض المرفق برابط سري عشوائي (للتطبيق فقط)
+    const id = (req.url.split('/')[3] || '').split('?')[0].replace(/[^a-f0-9]/g, ''); let meta = null;
+    try { meta = JSON.parse(fs.readFileSync(WMDIR + '/' + id + '.json', 'utf8')); } catch (e) {}
+    if (id.length < 24 || !meta) { res.writeHead(404); return res.end('no'); }
+    res.writeHead(200, { 'Content-Type': meta.mime, 'Cache-Control': 'private, max-age=604800', 'Access-Control-Allow-Origin': '*', 'Content-Disposition': 'inline' + (meta.name ? "; filename*=UTF-8''" + encodeURIComponent(meta.name) : '') });
+    return fs.createReadStream(WMDIR + '/' + id).pipe(res);
+  }
   if (req.url.startsWith('/staff/')) { staffRoute(req, res).catch(() => { try { res.writeHead(500); res.end(); } catch (e) {} }); return; }
   if (req.method === 'OPTIONS') { cors(req, res); res.writeHead(204); return res.end(); }
   if (!authed(req)) {
@@ -549,4 +563,4 @@ const srv = http.createServer((req, res) => {
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });

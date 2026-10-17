@@ -90,6 +90,7 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {} }) {
     if (out.kind === 'سعر محدد') out.kind = 'عرض سعر';
     const item = { id: 'live-' + last.id, mid: last.id, src: 'live', kind: out.kind || 'أخرى', from: name, chat: name, phone: last.ph || '', when, at: new Date(last.t).toISOString(),
       ask: String(out.ask || '').slice(0, 200), draft, attach, st: 'new', su: new Date().toISOString(),
+      media: msgs.some(m => !m.me && m.mf) ? msgs.filter(m => !m.me && m.mf).slice(-6).map(m => m.mf) : undefined,   // صور وملفات العميل
       p: owner ? 'يحتاج منك: ' + owner : 'رد جاهز لحظي (' + checked + ')' };
     for (let i = 0; i < 3; i++) {
       try {
