@@ -2,6 +2,7 @@
    ويُحفظ في live/gfiles (يظهر في التطبيق صفحة «ملفات القروبات»)، ويدخل ملخصه في سياق قراءة القروب.
    قراءة فقط: لا يُرسل شيء لأحد. الفيديو والصوت يُسجَّلان بلا قراءة. */
 'use strict';
+const crypto = require('crypto');
 const E = process.env;
 const MODEL = E.MODEL || 'claude-sonnet-5-5', KEY = E.ANTHROPIC_API_KEY;
 const MAX_ITEMS = +E.GFILES_MAX || 300, KEEP_DAYS = +E.GFILES_DAYS || 120, MAX_BYTES = 15e6, MAX_TEXT = 14000;
@@ -85,20 +86,52 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
     if (!dl || dl.buf.length > MAX_BYTES) return null;
     const { buf, mime } = dl;
     const mf = await wm.put(buf, mime, wm.nameOf(p), wm.msgId(p)); if (!mf) return null;
+    const h = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 24);
+    try { const cur = (await get()).items || []; const o = cur.find(x => x.h === h && x.mid !== meta.mid && !/^تعذّرت القراءة/.test(x.summary || ''));
+      if (o) { await linkDup(o.mid, meta.mid); return o; } } catch (e) {}   // نفس الملف أُرسل مرة ثانية: لا نقرؤه ولا نكرره
     let x; try { x = await read(mf, buf, mime, meta.cap); } catch (e) { lastErr = 'read ' + String(e.message || e).slice(0, 120); x = { type: kindOf(mime, mf.n) === 'img' ? 'صورة' : 'أخرى', title: mf.n || 'ملف', summary: 'تعذّرت القراءة الآلية: ' + String(e.message || e).slice(0, 80), lv: 'info', tags: [] }; }
     const it = Object.assign({ id: 'gf-' + String(meta.mid).replace(/[^A-Za-z0-9_@.-]/g, '').slice(-40), mid: meta.mid, at: new Date(meta.t).toISOString(), d: ymd(new Date(meta.t)), s: hm(meta.t),
-      chat: meta.chat, from: meta.from, me: !!meta.me, fn: mf.n || '', mime: mime.split(';')[0], k: mf.k, u: mf.u, cap: String(meta.cap || '').slice(0, 200) }, x);
+      chat: meta.chat, from: meta.from, me: !!meta.me, fn: mf.n || '', mime: mime.split(';')[0], k: mf.k, u: mf.u, cap: String(meta.cap || '').slice(0, 200), h }, x);
     for (const k of ['title', 'summary', 'party', 'to', 'ref', 'action', 'cap']) if (it[k]) it[k] = scrub(it[k]);   // شبكة أمان: لا أرقام هوية أو حسابات
     it.tags = (it.tags || []).map(scrub);
     await save(it);
     if (!quiet && it.lv !== 'info') await addDaily([{ src: 'ملفات', t: `${it.chat}: ${it.from} أرسل ${it.type} — ${it.title}${it.amount ? ' (' + it.amount + ' ' + it.cur + ')' : ''}${it.action ? ' · ' + it.action : ''}`, s: it.s, lv: it.lv, k: 'gf:' + it.mid }]);
     n++; return it;
   }
+  // نفس المستند بصيغتين (صورة ثم PDF، أو أُعيد إرساله): نفس النوع والمبلغ والجهة وخلال 3 أيام، أو نفس الرقم المرجعي
+  const norm = v => String(v || '').replace(/[\s\u064B-\u0652()\-–_.,:]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').toLowerCase();
+  function same(a, b) {
+    if (!a || !b || a.mid === b.mid || a.type !== b.type || ['صورة', 'صوت', 'فيديو', 'أخرى', 'لقطة شاشة'].includes(a.type)) return false;
+    const days = Math.abs(Date.parse(a.d || 0) - Date.parse(b.d || 0)) / 864e5;
+    if (days > 3 || a.amount == null || b.amount == null || !+a.amount || Math.abs(+a.amount - +b.amount) > 0.01) return false;   // مبلغ متطابق خلال 3 أيام فقط
+    return norm(a.party).slice(0, 6) === norm(b.party).slice(0, 6) || norm(a.title) === norm(b.title) || (!!a.ref && norm(a.ref) === norm(b.ref));
+  }
+  function linkDup(orig, mid) {
+    busy = busy.then(async () => { for (let a = 0; a < 3; a++) { try { const d = await get(); const o = d.items.find(x => x.mid === orig); if (!o) return; o.dups = [...new Set((o.dups || []).concat(mid))].slice(-30); d.items = d.items.filter(x => x.mid !== mid); d.at = new Date().toISOString(); d.n = d.items.length; await gas({ op: 'set', path: 'live/gfiles', data: d }); return; } catch (e) { await new Promise(r => setTimeout(r, 3000 * (a + 1))); } } });
+    return busy;
+  }
+  // تنظيف السجل كله مرة: نحسب بصمة كل ملف محفوظ، ونضم المتطابق، ونعلّم المكرر بالمعنى
+  async function dedupe() {
+    const r = { exact: 0, similar: 0, hashed: 0 };
+    busy = busy.then(async () => {
+      const d = await get(); const L = (d.items || []).slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
+      for (const x of L) if (!x.h && x.u) { try { const q = await fetch(x.u); if (q.ok) { x.h = crypto.createHash('sha256').update(Buffer.from(await q.arrayBuffer())).digest('hex').slice(0, 24); r.hashed++; } } catch (e) {} }
+      const first = new Map(), keep = [];
+      for (const x of L) { if (x.h && first.has(x.h)) { const o = first.get(x.h); o.dups = [...new Set((o.dups || []).concat(x.mid, x.dups || []))].slice(-30); r.exact++; continue; } if (x.h) first.set(x.h, x); keep.push(x); }
+      for (const x of keep) delete x.dupOf;
+      for (let i = 0; i < keep.length; i++) { if (keep[i].dupOf) continue; for (let j = i + 1; j < keep.length; j++) if (!keep[j].dupOf && same(keep[i], keep[j])) { keep[j].dupOf = keep[i].mid; r.similar++; } }
+      d.items = keep.reverse(); d.at = new Date().toISOString(); d.n = d.items.length; await gas({ op: 'set', path: 'live/gfiles', data: d });
+      console.log('gfiles dedupe', JSON.stringify(r));
+    }).catch(e => { lastErr = 'dedupe ' + e.message; });
+    await busy; return r;
+  }
   function save(it) {   // بند واحد لكل رسالة؛ الأحدث أولًا؛ نقرأ قبل الكتابة حتى لا نمسح ما كُتب أثناء القراءة؛ ثلاث محاولات
     busy = busy.then(async () => {
       for (let a = 0; a < 3; a++) {
         try {
-          const d = await get(); d.items = (d.items || []).filter(x => x.mid !== it.mid); d.items.unshift(it);
+          const d = await get(); d.items = (d.items || []).filter(x => x.mid !== it.mid);
+          const ex = d.items.find(x => x.h && x.h === it.h); if (ex) { ex.dups = [...new Set((ex.dups || []).concat(it.mid))].slice(-30); }
+          else { const o = d.items.find(x => !x.dupOf && same(x, it)); if (o) it.dupOf = o.mid; else delete it.dupOf; d.items.unshift(it); }
           const cut = ymd(new Date(Date.now() - KEEP_DAYS * 864e5)); d.items = d.items.filter(x => (x.d || '') >= cut).slice(0, MAX_ITEMS);
           d.at = new Date().toISOString(); d.n = d.items.length; await gas({ op: 'set', path: 'live/gfiles', data: d }); return;
         } catch (e) { lastErr = 'save ' + String(e.message || e).slice(0, 120); await new Promise(r => setTimeout(r, 3000 * (a + 1))); }
@@ -148,6 +181,6 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
     const it = await process(p, { mid, t: +o.t || Date.now(), chat: String(o.chat || ''), from: String(o.from || ''), me: false, cap: '' }, true, { buf, mime: String(o.mime || 'application/octet-stream') });
     return it ? { ok: true, type: it.type, title: it.title } : { ok: false };
   }
-  return { onMedia, backfill, read, ingest, status: () => ({ n, lastErr, model: MODEL, bf }) };
+  return { onMedia, backfill, read, ingest, dedupe, status: () => ({ n, lastErr, model: MODEL, bf }) };
 }
 module.exports = { setup, kindOf };

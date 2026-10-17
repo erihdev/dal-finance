@@ -153,6 +153,10 @@ setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); se
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status(), media: wm.status(), gfiles: gfiles.status() })); }
+  if (req.method === 'POST' && req.url === '/gfiles/dedupe') {   // تنظيف المكرر في سجل الملفات (بمفتاح)
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    gfiles.dedupe().then(r => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(r)); }).catch(e => { res.writeHead(500); res.end(String(e.message)); }); return;
+  }
   if (req.method === 'POST' && req.url === '/gfiles/ingest') {   // ملف من تصدير محادثة (بمفتاح)
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     let body = ''; req.on('data', c => { body += c; if (body.length > 40e6) req.destroy(); });
@@ -255,4 +259,5 @@ async function backfillMedia() {
 setTimeout(() => drafter.recheck().catch(e => console.log('recheck ERR', e.message)), 150e3);   // بعد التشغيل: البطاقات المفتوحة بالسياق الكامل
 const bf = () => backfillMedia().catch(e => { lastErr = 'backfill ' + e.message; console.log('backfill ERR', e.message); });
 setTimeout(bf, 60e3); setInterval(bf, 30 * 60e3);
+setTimeout(() => gfiles.dedupe().catch(() => {}), 90e3); setInterval(() => gfiles.dedupe().catch(() => {}), 24 * 3600e3);   // تنظيف المكرر بعد التشغيل ويوميًا
 
