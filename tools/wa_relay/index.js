@@ -181,22 +181,24 @@ async function backfillMedia() {
   const r = await gas({ op: 'get', paths: ['live/inbox'] }); const d = (r.docs['live/inbox'] || {}).data; if (!d || !Array.isArray(d.items)) return 0;
   let n = 0;
   for (const it of d.items) {
-    if (it.st === 'done' || it.media || !it.phone) continue;
-    let ms = []; try { ms = await waha(`/api/${SESSION}/chats/${encodeURIComponent(it.phone + '@c.us')}/messages?limit=20&downloadMedia=true`); } catch (e) { continue; }
+    if (it.st === 'done' || it.media || it.mck || !it.phone) continue;
+    let ms = []; try { ms = await waha(`/api/${SESSION}/chats/${encodeURIComponent(it.phone + '@c.us')}/messages?limit=20&downloadMedia=true`); } catch (e) { console.log('backfill chat', it.phone.slice(-4), e.message); continue; }
     const since = (Date.parse(it.at || 0) || 0) - 2 * 864e5; const out = [];
     for (const m of (Array.isArray(ms) ? ms : []).sort((a, b) => a.timestamp - b.timestamp)) {
       if (m.fromMe || !m.hasMedia || m.timestamp * 1000 < since) continue;
       const f = await wm.fromPayload(m); if (f) out.push(f);
     }
-    if (out.length) { it.media = out.slice(-6); n++; }
+    if (out.length) { it.media = out.slice(-6); n++; } else if (!(Array.isArray(ms) ? ms : []).some(m => !m.fromMe && m.hasMedia && m.timestamp * 1000 >= since)) it.mck = 1;
   }
-  if (n) {   // نعيد القراءة قبل الكتابة حتى لا نمسح تغييرات حدثت أثناء التحميل
+  console.log('backfill media: cards', n, JSON.stringify(wm.status()));
+  if (n || d.items.some(x => x.mck)) {   // نعيد القراءة قبل الكتابة حتى لا نمسح تغييرات حدثت أثناء التحميل
     const r2 = await gas({ op: 'get', paths: ['live/inbox'] }); const d2 = (r2.docs['live/inbox'] || {}).data || { items: [] };
-    const by = new Map(d.items.filter(x => x.media).map(x => [x.id, x.media]));
-    for (const it of d2.items || []) if (!it.media && by.has(it.id)) it.media = by.get(it.id);
+    const by = new Map(d.items.filter(x => x.media || x.mck).map(x => [x.id, x]));
+    for (const it of d2.items || []) { const o = by.get(it.id); if (o && !it.media) { if (o.media) it.media = o.media; else it.mck = 1; } }
     d2.at = new Date().toISOString(); await gas({ op: 'set', path: 'live/inbox', data: d2 });
   }
   return n;
 }
-setTimeout(() => backfillMedia().catch(e => { lastErr = 'backfill ' + e.message; }), 120e3);
+const bf = () => backfillMedia().catch(e => { lastErr = 'backfill ' + e.message; console.log('backfill ERR', e.message); });
+setTimeout(bf, 240e3); setInterval(bf, 30 * 60e3);
 
