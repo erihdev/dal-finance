@@ -74,7 +74,7 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
   // يحمّل المرفق من WAHA (الرابط على localhost → المسار فقط) ويحفظه في متصفح دال ويقرؤه
   async function process(p, meta, quiet, pre) {   // meta: {mid, t, chat, from, me, cap}؛ pre: {buf,mime} إن حُمّل مسبقًا
     const url = p.media && p.media.url; if (!url && !pre) return null;
-    if ((p._data && p._data.type === 'sticker') || p.type === 'sticker' || (p._data && p._data.isSticker)) return null;   // الملصقات لا تهم
+    if ((p._data && p._data.type === 'sticker') || p.type === 'sticker' || (p._data && p._data.isSticker) || /image\/webp/i.test((p.media && p.media.mimetype) || '')) return null;   // الملصقات (webp) لا تهم
     let dl = pre || null; if (!dl) { try { dl = await wm.download(url, p.media && p.media.mimetype); } catch (e) { lastErr = 'dl ' + String(e.message || e).slice(0, 100); } }
     if (!dl || dl.buf.length > MAX_BYTES) return null;
     const { buf, mime } = dl;
