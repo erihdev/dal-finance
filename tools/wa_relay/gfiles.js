@@ -53,7 +53,9 @@ function textOf(buf, k) {
 function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
   let known = 0;   // أكبر عدد بنود رأيناه: إن عاد المستند أصغر بكثير فالقراءة ناقصة، لا نكتب فوقه
   const get = async () => { const r = await gas({ op: 'get', paths: ['live/gfiles'] }); if (!r || !r.docs) throw new Error('gfiles read: no docs');
-    const d = (r.docs['live/gfiles'] || {}).data; if (!d || !Array.isArray(d.items)) { if (known) throw new Error('gfiles read: empty'); return { items: [] }; }
+    const doc = r.docs['live/gfiles']; if (!doc) { if (known) throw new Error('gfiles read: missing'); return { items: [] }; }   // المستند غير موجود فعلًا
+    const d = doc.data; if (!d || !Array.isArray(d.items)) throw new Error('gfiles read: empty doc');   // قراءة فارغة لمستند موجود: لا نكتب فوقه أبدًا
+    if (+d.n && d.items.length < +d.n * 0.6) throw new Error('gfiles read: partial ' + d.items.length + '/' + d.n);
     if (known > 20 && d.items.length < known * 0.6) throw new Error('gfiles read: shrank ' + d.items.length + '/' + known);
     known = Math.max(known, d.items.length); return d; };
   async function read(mf, buf, mime, cap) {   // mf: {u,k,n}
