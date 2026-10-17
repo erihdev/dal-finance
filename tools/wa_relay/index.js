@@ -153,6 +153,12 @@ setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); se
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status(), media: wm.status(), gfiles: gfiles.status() })); }
+  if (req.method === 'POST' && req.url === '/gfiles/ingest') {   // ملف من تصدير محادثة (بمفتاح)
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    let body = ''; req.on('data', c => { body += c; if (body.length > 40e6) req.destroy(); });
+    req.on('end', () => { (async () => { const r = await gfiles.ingest(JSON.parse(body || '{}')); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(r)); })().catch(e => { res.writeHead(500); res.end(String(e.message || e)); }); });
+    return;
+  }
   if (req.method === 'POST' && req.url.startsWith('/gfiles/backfill')) {   // قراءة ملفات قروب سابقة (مرة واحدة): ?cid=<معرّف القروب>&limit=N
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     const Q = new URL(req.url, 'http://x').searchParams; const cid = Q.get('cid') || '';

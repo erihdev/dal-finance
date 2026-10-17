@@ -137,6 +137,15 @@ function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
     } finally { bf.running = false; console.log('gfiles backfill', JSON.stringify(bf)); }
     return bf;
   }
-  return { onMedia, backfill, read, status: () => ({ n, lastErr, model: MODEL, bf }) };
+  // ملف من تصدير محادثة واتساب (للأشهر التي انتهت روابطها): {chat, from, t, name, mime, b64}
+  async function ingest(o) {
+    const buf = Buffer.from(String(o.b64 || ''), 'base64'); if (!buf.length) throw new Error('empty');
+    const mid = 'export:' + String(o.chat || '') + ':' + String(o.name || '');
+    const cur = (await get()).items || []; if (cur.some(x => x.mid === mid && !/^تعذّرت القراءة/.test(x.summary || ''))) return { skip: true };
+    const p = { id: mid, _data: { filename: String(o.name || '').replace(/^\d{8}-/, '') } };
+    const it = await process(p, { mid, t: +o.t || Date.now(), chat: String(o.chat || ''), from: String(o.from || ''), me: false, cap: '' }, true, { buf, mime: String(o.mime || 'application/octet-stream') });
+    return it ? { ok: true, type: it.type, title: it.title } : { ok: false };
+  }
+  return { onMedia, backfill, read, ingest, status: () => ({ n, lastErr, model: MODEL, bf }) };
 }
 module.exports = { setup, kindOf };

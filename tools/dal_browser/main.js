@@ -497,6 +497,9 @@ const srv = http.createServer((req, res) => {
   if (req.method === 'POST' && /^\/relay\/gfiles\/backfill(\?|$)/.test(req.url)) {   // قراءة ملفات قروب سابقة عبر الناقل (بمفتاح)
     return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const r = await fetch(RELAY + req.url.slice(6), { method: 'POST', headers: { 'x-dal-key': KEY } }); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(await r.text()); } catch (e) { res.writeHead(500); res.end(String(e.message || e)); } })();
   }
+  if (req.method === 'POST' && req.url === '/relay/gfiles/ingest') {   // ملف من تصدير محادثة إلى الناقل (بمفتاح)
+    return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const b = await readBody(req, 40e6); const r = await fetch(RELAY + '/gfiles/ingest', { method: 'POST', headers: { 'x-dal-key': KEY, 'content-type': 'application/json' }, body: b }); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(await r.text()); } catch (e) { res.writeHead(500); res.end(String(e.message || e)); } })();
+  }
   if (req.method === 'POST' && req.url === '/push/test') {   // تجربة إشعار عبر الناقل (بمفتاح)
     return (async () => { try { if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); } const r = await fetch(RELAY + '/push/test', { method: 'POST', headers: { 'x-dal-key': KEY } }); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(await r.text()); } catch (e) { res.writeHead(500); res.end(String(e.message || e)); } })();
   }
