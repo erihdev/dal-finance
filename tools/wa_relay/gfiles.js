@@ -51,7 +51,11 @@ function textOf(buf, k) {
 }
 
 function setup({ gas, waha, wm, addDaily = async () => {}, touch = () => {} }) {
-  const get = async () => { const r = await gas({ op: 'get', paths: ['live/gfiles'] }); return ((r.docs || {})['live/gfiles'] || {}).data || { items: [] }; };
+  let known = 0;   // أكبر عدد بنود رأيناه: إن عاد المستند أصغر بكثير فالقراءة ناقصة، لا نكتب فوقه
+  const get = async () => { const r = await gas({ op: 'get', paths: ['live/gfiles'] }); if (!r || !r.docs) throw new Error('gfiles read: no docs');
+    const d = (r.docs['live/gfiles'] || {}).data; if (!d || !Array.isArray(d.items)) { if (known) throw new Error('gfiles read: empty'); return { items: [] }; }
+    if (known > 20 && d.items.length < known * 0.6) throw new Error('gfiles read: shrank ' + d.items.length + '/' + known);
+    known = Math.max(known, d.items.length); return d; };
   async function read(mf, buf, mime, cap) {   // mf: {u,k,n}
     const k = kindOf(mime, mf.n);
     const capTxt = cap ? `\n\nالتعليق المرافق: «${String(cap).slice(0, 300)}»` : '';
