@@ -79,6 +79,7 @@ async function onMsg(p) {
   const chat = await chatName(cid, isGroup, (isGroup || me) ? '' : pushName);   // pushName في رسالتي الصادرة هو اسمي أنا
   if (EXCLUDE.some(x => x === chat || x === digits(cid))) return;
   if (isGroup && GROUPS.length && !GROUPS.includes(chat)) return;
+  if (isGroup && !jobsMod.isDal(chat)) return;   // قروبات غير دال (منتديات، عائلة): لا تُحفظ ولا تُتابع إطلاقًا
   const who = me ? 'أنت' : (isGroup ? await whoOf(String(p.participant || p.author || ''), pushName) : chat);
   if (p.hasMedia && isGroup) invoices.onMedia(p, chat, who, waha);
   const text = String(p.body || '').trim() || (p.hasMedia ? mediaLabel(p) : '');
@@ -111,7 +112,7 @@ let seeded = false;
 async function seed() {   // لا نكتب فوق الأرشيف قبل قراءته (حتى لا يضيع عند إعادة التشغيل)؛ نعيد المحاولة حتى تنجح ثم ندمج
   for (let i = 0; i < 20 && !seeded; i++) {
     try { const r = await gas({ op: 'get', paths: ['live/wa_live'] }); const d = r.docs && r.docs['live/wa_live']; const old = (d && d.data && Array.isArray(d.data.msgs)) ? d.data.msgs : [];
-      const ids = new Set(buf.map(m => m.id)); for (const m of old) if (!ids.has(m.id) && !(m.me && !m.g && !m.ph)) buf.push(m); seeded = true; if (buf.length) schedule();   // نُسقط رسائلي الصادرة القديمة بلا رقم (كانت تُنسب لاسمي)
+      const ids = new Set(buf.map(m => m.id)); for (const m of old) if (!ids.has(m.id) && !(m.me && !m.g && !m.ph) && !(m.g && !jobsMod.isDal(m.chat))) buf.push(m); seeded = true; if (buf.length) schedule();   // نُسقط رسائلي الصادرة القديمة بلا رقم (كانت تُنسب لاسمي)
       const day = Date.now() - 864e5, pv = buf.filter(m => !m.g && m.t > day); console.log('seed: private last 24h — mine', pv.filter(m => m.me).length, 'theirs', pv.filter(m => !m.me).length); }   // تشخيص: هل تصل ردودي؟
     catch (e) { lastErr = 'seed ' + e.message; await new Promise(ok => setTimeout(ok, 15000)); }
   }
