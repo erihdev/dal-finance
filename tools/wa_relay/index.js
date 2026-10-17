@@ -14,7 +14,7 @@ const pusher = require('./push').setup({ gas: o => gas(o) });
 const wm = require('./wamedia').setup({ waha: (a, b) => waha(a, b), key: KEY });
 const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
 const invoices = require('./invoices');
-const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push });
+const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
 const names = new Map();
 

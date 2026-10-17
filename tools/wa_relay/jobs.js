@@ -28,7 +28,10 @@ async function claude(system, user) {
   return JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
 }
 
-function setup({ gas, getBuf, push = async () => {} }) {
+let STAFF = {}; try { STAFF = JSON.parse(E.STAFF_JSON || '{}'); } catch (e) {}
+const SESSION = E.WAHA_SESSION || 'default';
+const digitsOf = s => String(s || '').replace(/\D/g, '');
+function setup({ gas, getBuf, push = async () => {}, waha = null }) {
   const get = async p => { const r = await gas({ op: 'get', paths: ['live/' + p] }); return ((r.docs || {})['live/' + p] || {}).data; };
   const set = (p, data) => gas({ op: 'set', path: 'live/' + p, data });
   const groupMsgs = name => getBuf().filter(m => m.g && m.chat === name).sort((a, b) => a.t - b.t);
@@ -127,6 +130,87 @@ function setup({ gas, getBuf, push = async () => {} }) {
     return openBusy;
   }
 
+  // ---------- 2ج) سجل العملاء التفصيلي (live/customers): طلبات وتحويلات وحقائق كل عميل من محادثته الخاصة ----------
+  const SYS_C = `تقرأ محادثة واتساب خاصة بين محمصة دال (ضيف الله) وشخص. المطلوب تحديث سجل هذا الشخص كعميل.
+أعد JSON فقط:
+{"customer":true|false, "name":"اسمه إن ظهر وإلا فارغ", "type":"cafe|person|shop|unk", "city":"إن ذُكرت وإلا فارغ",
+ "orders":[{"mid":"معرّف الرسالة","what":"ماذا طلب","kg":رقم أو null,"amount":رقم أو null,"st":"طلب|مؤكد|سُلّم"}],
+ "transfers":[{"mid":"…","amount":رقم}],
+ "asks":[{"mid":"…","text":"ما سأله أو طلبه باختصار"}],
+ "facts":["حقيقة قصيرة مؤكدة من المحادثة"]}
+customer=true فقط إذا كان يشتري أو يسأل عن بن/منتج/سعر/طلب/تحميص/كود خصم. المتقدم لوظيفة أو المورد أو الموظف أو الإعلانات: customer=false.
+لا تخترع. ما لم يُذكر صراحة لا يُكتب. type بلا دليل = unk. لا أرقام هوية أو حسابات أو IBAN. اعتمد فقط على الرسائل الجديدة (معرّفاتها مذكورة) وخذ القديم كسياق.`;
+  async function history(ph, n) {
+    if (!waha || !ph) return [];
+    try { const ms = await waha(`/api/${SESSION}/chats/${encodeURIComponent(ph + '@c.us')}/messages?limit=${n || 20}&downloadMedia=false`);
+      return (Array.isArray(ms) ? ms : []).map(m => ({ id: String(m.id && (m.id._serialized || m.id) || ''), t: (+m.timestamp || 0) * 1000, me: !!m.fromMe, ph, from: m.fromMe ? 'أنت' : ph, x: String(m.body || '').trim() || (m.hasMedia ? '📎 مرفق' : '') })).filter(m => m.id && m.x); }
+    catch (e) { return []; }
+  }
+  const supPhones = async () => { try { const d = await get('suppliers'); const set = new Set(); for (const sp of (d && d.list) || []) { if (sp.phone) set.add(digitsOf(sp.phone)); for (const c of sp.contacts || []) for (const m of String(c).match(/\+?\d[\d\s]{8,}/g) || []) set.add(digitsOf(m)); } return set; } catch (e) { return new Set(); } };
+  const cLast = {};
+  async function runCustomer(ph) {
+    if (!ph || STAFF[ph]) return;
+    if ((await supPhones()).has(ph)) return runSupplier(ph);
+    if (!AKEY) return;
+    const fromBuf = getBuf().filter(m => !m.g && m.ph === ph);
+    const hist = await history(ph, 25);
+    const dup = (a, b) => a.id === b.id || (a.me === b.me && Math.abs(a.t - b.t) < 3000 && a.x === b.x);
+    const all = fromBuf.concat(hist.filter(h => !fromBuf.some(b => dup(b, h)))).sort((a, b) => a.t - b.t);
+    if (!all.length) return;
+    const idx = cLast[ph] ? all.findIndex(m => m.id === cLast[ph]) : -1;
+    const fresh = all.slice(idx + 1).filter(m => !m.me && (idx >= 0 || m.t > Date.now() - (+E.CU_BOOT_HOURS || 6) * 3600e3));
+    if (!fresh.length) { cLast[ph] = all[all.length - 1].id; return; }
+    const doc = (await get('customers')) || { list: [] }; doc.list = doc.list || [];
+    let rec = doc.list.find(c => digitsOf(c.id) === ph || digitsOf(c.phone) === ph);
+    const chatName = (fromBuf.find(m => !m.me) || {}).chat || ph;
+    const ctx = rec ? `سجله الحالي: الاسم ${rec.name || '—'}، النوع ${rec.type || 'unk'}، المدينة ${rec.city || '—'}، آخر طلبات: ${JSON.stringify((rec.orders || []).slice(-4).map(o => [o.d, o.what, o.kg, o.amount, o.st]))}، حقائق: ${JSON.stringify((rec.facts || []).slice(-6))}` : 'لا سجل سابق له.';
+    const out = await claude(SYS_C, `${ctx}\nاسم الدردشة: ${chatName}\nالرسائل الجديدة هي ذوات المعرّفات: ${fresh.map(m => m.id).join(', ')}\n\n${conv(all.slice(-25).map(m => Object.assign({}, m, { from: m.me ? 'ضيف الله' : chatName })))}`);
+    cLast[ph] = all[all.length - 1].id;
+    if (!rec && !out.customer) return;
+    const byId = new Map(fresh.map(m => [m.id, m])); const last = all[all.length - 1]; const now = new Date().toISOString();
+    if (!rec) { rec = { id: ph, phone: ph, chat: chatName, name: String(out.name || chatName).slice(0, 60), type: out.type || 'unk', city: String(out.city || ''), returning: false, orders: [], transfers: [], facts: [], asks: [], first_date: ymd(new Date(fresh[0].t)), src: 'live' }; doc.list.push(rec); }
+    if (out.name && !rec.name) rec.name = String(out.name).slice(0, 60);
+    if (out.type && out.type !== 'unk' && (!rec.type || rec.type === 'unk')) rec.type = out.type;
+    if (out.city && !rec.city) rec.city = String(out.city).slice(0, 40);
+    rec.orders = rec.orders || []; rec.transfers = rec.transfers || []; rec.facts = rec.facts || []; rec.asks = rec.asks || [];
+    const oid = mid => 'wa-' + stamp(byId.get(mid).t);
+    for (const o of out.orders || []) if (byId.has(o.mid) && !rec.orders.some(x => x.id === oid(o.mid))) rec.orders.push({ id: oid(o.mid), d: ymd(new Date(byId.get(o.mid).t)), what: String(o.what || '').slice(0, 160), kg: o.kg == null ? null : +o.kg, amount: o.amount == null ? null : +o.amount, st: String(o.st || 'طلب').slice(0, 40), src: 'واتساب' });
+    for (const t of out.transfers || []) if (byId.has(t.mid) && t.amount && !rec.transfers.some(x => x.id === oid(t.mid))) rec.transfers.push({ id: oid(t.mid), d: ymd(new Date(byId.get(t.mid).t)), amount: +t.amount, src: 'إيصال في واتساب' });
+    for (const a of out.asks || []) if (byId.has(a.mid) && a.text) rec.asks.push({ d: ymd(new Date(byId.get(a.mid).t)), text: String(a.text).slice(0, 160) });
+    for (const f of out.facts || []) { const t = String(f).slice(0, 160); if (t && !rec.facts.includes(t)) rec.facts.push(t); }
+    rec.asks = rec.asks.slice(-20); rec.facts = rec.facts.slice(-24);
+    if (rec.orders.length > 1 || rec.transfers.length) rec.returning = true;
+    rec.last_date = ymd(new Date(last.t)); rec.last_from = last.me ? 'me' : 'them'; rec.unanswered = !last.me; rec.updated = now;
+    doc.at = now; await set('customers', doc); runs.customers = (runs.customers || 0) + 1;
+    const nOrd = (out.orders || []).filter(o => byId.has(o.mid)).length;
+    if (nOrd) await addDaily([{ src: 'العملاء', t: `${rec.name}: طلب جديد — ${String(out.orders[0].what || '').slice(0, 100)}`, s: hm(last.t), lv: 'warn', k: 'cu:' + fresh[fresh.length - 1].id }]);
+  }
+  async function markCustomerReplied(ph, t) {   // ردّ ضيف الله: بلا نموذج ذكي
+    try { const doc = await get('customers'); if (!doc || !Array.isArray(doc.list)) return; const rec = doc.list.find(c => digitsOf(c.id) === ph || digitsOf(c.phone) === ph); if (!rec || rec.last_from === 'me') return;
+      rec.last_from = 'me'; rec.unanswered = false; rec.last_date = ymd(new Date(t)); doc.at = new Date().toISOString(); await set('customers', doc); } catch (e) { lastErr = 'cu-me ' + e.message; }
+  }
+
+  // ---------- 2د) ملفات الموردين (live/suppliers): ملفات ورسائل المورد تُضاف لملفه ----------
+  const sLast = {};
+  async function runSupplier(ph) {
+    const doc = await get('suppliers'); if (!doc || !Array.isArray(doc.list)) return;
+    const sp = doc.list.find(x => digitsOf(x.phone) === ph || (x.contacts || []).some(c => (String(c).match(/\+?\d[\d\s]{8,}/g) || []).some(m => digitsOf(m) === ph))); if (!sp) return;
+    const ms = getBuf().filter(m => !m.g && m.ph === ph).sort((a, b) => a.t - b.t);
+    const idx = sLast[ph] ? ms.findIndex(m => m.id === sLast[ph]) : -1;
+    const fresh = ms.slice(idx + 1).filter(m => idx >= 0 || m.t > Date.now() - 6 * 3600e3); if (!fresh.length) return;
+    sLast[ph] = ms[ms.length - 1].id;
+    sp.files = sp.files || []; sp.chat = Array.isArray(sp.chat) ? sp.chat : []; let n = 0;
+    for (const m of fresh) {
+      const d = ymd(new Date(m.t)), who = m.me ? 'أنت' : 'هو (' + (m.chat || '') + ')';
+      if (m.mf && m.mf.k !== 'aud') { const name = m.mf.n || (m.mf.k === 'img' ? 'صورة' : 'ملف'); if (!sp.files.some(f => f.d === d && f.name === name)) { sp.files.push({ d, name, by: m.chat || who, u: m.mf.u }); n++; } }
+      if (m.x && !/^📎|^📷|^🎤|^🎥/.test(m.x)) { sp.chat.push({ d, who, t: String(m.x).slice(0, 160) }); n++; }
+      if (!m.me) sp.last = d;
+    }
+    sp.chat = sp.chat.slice(-60); if (!n) return;
+    doc.at = new Date().toISOString(); await set('suppliers', doc); runs.suppliers = (runs.suppliers || 0) + 1;
+    const inc = fresh.filter(m => !m.me); if (inc.length) await addDaily([{ src: 'الموردون', t: `${sp.name}: ${inc.some(m => m.mf) ? 'أرسل ملفًا' : 'رسالة جديدة'} — ${String(inc[inc.length - 1].x || '').slice(0, 90)}`, s: hm(inc[inc.length - 1].t), lv: 'info', k: 'sup:' + inc[inc.length - 1].id }]);
+  }
+
   // ---------- 3) حالة الردود الجاهزة ----------
   let inboxBusy = Promise.resolve();
   function onPrivate(m) {
@@ -205,9 +289,9 @@ function setup({ gas, getBuf, push = async () => {} }) {
       if (m.g && m.chat === SLOW_GROUP) debounce('slow', runSlow);
       else if (m.g && m.chat === RT_GROUP) debounce('rt', runRt);
       else if (m.g) { if (!m.me && isDal(m.chat)) debounce('g:' + m.chat, () => runGroup(m.chat)); }
-      else onPrivate(m);
+      else { onPrivate(m); if (m.ph && !STAFF[m.ph]) { if (m.me) markCustomerReplied(m.ph, m.t); else debounce('cu:' + m.ph, () => runCustomer(m.ph)); } }
     },
-    runSlow, runRt, runReminders, dueReminders, addDaily, addOpen, runGroup,
+    runSlow, runRt, runReminders, dueReminders, addDaily, addOpen, runGroup, runCustomer, runSupplier,
     status() { return { model: MODEL, enabled: !!AKEY, runs, lastErr }; },
   };
 }

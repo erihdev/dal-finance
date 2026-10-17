@@ -17,7 +17,7 @@ const SITES = [
   { k: 'retm', name: 'رتم', url: 'https://retm.sa/dashboard?period=1', login: /login|signin/i },
   { k: 'bonat', name: 'بونات', url: 'https://store.bonat.io/', login: /login|signin/i },
   { k: 'olu', name: 'علو', url: 'https://hr.olu.sa/', login: /login|signin/i, noText: true },
-  { k: 'tamara', name: 'تمارا', url: 'https://partners.tamara.co/#/dashboard', login: /login|signin|otp|verify/i, noText: true },
+  // تمارا: أُوقفت قراءتها بطلب ضيف الله (لا تحتاج الآن)؛ تقرير حساب يقرؤها عند الطلب فقط
 ];
 let ctx = null, state = { at: null, sites: {} }, busy = false, viewers = 0, lastView = 0;
 const SLOGF = '/data/sales_log.json'; let SLOG = {}; try { SLOG = JSON.parse(fs.readFileSync(SLOGF, 'utf8')); } catch (e) {}
