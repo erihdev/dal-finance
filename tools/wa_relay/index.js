@@ -12,6 +12,7 @@ const GROUPS = list(E.INCLUDE_GROUPS);           // فارغ = كل المجمو
 const EXCLUDE = list(E.EXCLUDE_CHATS);          // أسماء أو أرقام لا تُنقل أبدًا (عائلة، مجتمعات...)
 const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf });
 const invoices = require('./invoices');
+const jobs = require('./jobs').setup({ gas: o => gas(o), getBuf: () => buf });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
 const names = new Map();
 
@@ -69,6 +70,7 @@ async function onMsg(p) {
     q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined });
   schedule();
   try { drafter.onMessage(buf[buf.length - 1]); } catch (e) { lastErr = 'drafter ' + e.message; }
+  try { jobs.onMessage(buf[buf.length - 1]); } catch (e) { lastErr = 'jobs ' + e.message; }
 }
 function schedule() {
   dirty = true; if (!firstAt) firstAt = Date.now();
@@ -125,7 +127,12 @@ async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['
 setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
-  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status() })); }
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status() })); }
+  if (req.method === 'POST' && /^\/jobs\/(slow|rt|remind)$/.test(req.url)) {   // تشغيل يدوي للتجربة
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    const k = req.url.split('/').pop(); ({ slow: jobs.runSlow, rt: jobs.runRt, remind: jobs.runReminders })[k]().then(() => { res.writeHead(200); res.end('ok'); }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
+    return;
+  }
   if (req.method === 'POST' && req.url === '/invoice/process') {   // من متصفح دال (رفع يدوي من التطبيق): يقرأ ويفحص ويحفظ
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     let b = ''; req.on('data', c => { b += c; if (b.length > 20e6) req.destroy(); });
