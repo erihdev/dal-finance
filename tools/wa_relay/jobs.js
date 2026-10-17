@@ -226,7 +226,7 @@ customer=true فقط إذا كان يشتري أو يسأل عن بن/منتج/�
         const itT = Date.parse(it.at || it.su || 0) || 0; if (m.t <= itT) continue;
         if (!m.me && m.mf) { it.media = (it.media || []).concat(m.mf).slice(-6); ch = true; }   // مرفق جديد من العميل
         if (m.me && it.st === 'new') { it.st = 'sent'; it.su = now; it.p = 'تم الرد ' + hm(m.t); ch = true; }
-        else if (!m.me && it.st === 'sent') { it.st = 'followup'; it.su = now; it.p = 'ردّ: ' + String(m.x).slice(0, 140); ch = true; push({ title: 'ردّ من ' + (it.from || it.chat), msg: String(m.x).slice(0, 300), lv: 'warn', tag: 'speech_balloon' }); }
+        else if (!m.me && it.st === 'sent') { it.st = 'followup'; it.su = now; it.p = 'ردّ: ' + String(m.x).slice(0, 140); ch = true; push({ title: 'ردّ من ' + (it.from || it.chat), msg: String(m.x).slice(0, 300), lv: 'warn', tag: 'wa-' + (it.phone || it.chat), click: it.phone ? 'https://wa.me/' + String(it.phone).replace(/\D/g, '') : undefined }); }
       }
       if (ch) { d.at = now; await set('inbox', d); runs.inbox++; }
     }).catch(e => { lastErr = 'inbox ' + e.message; });

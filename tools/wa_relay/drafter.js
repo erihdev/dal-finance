@@ -179,7 +179,7 @@ function setup({ gas, getBuf, lastErrRef, push = async () => {}, waha = null, wm
         if (d.items.some(x => x.mid === item.mid)) return;
         d.items.push(item); d.at = new Date().toISOString();
         await gas({ op: 'set', path: 'live/inbox', data: d });
-        if (!quiet) push({ title: 'رسالة من ' + name, msg: (item.ask || '') + (owner ? '\nيحتاج منك: ' + owner : '\nالرد الجاهز في التطبيق'), lv: owner ? 'warn' : 'info', tag: 'incoming_envelope' }); return;
+        if (!quiet) { const ph = String(item.phone || '').replace(/\D/g, ''); push({ title: 'رسالة من ' + name, msg: (item.ask || '') + (owner ? '\nيحتاج منك: ' + owner : '') + (draft ? '\n↩︎ ' + String(draft).slice(0, 400) : ''), lv: owner ? 'warn' : 'info', tag: 'wa-' + (ph || last.chat), click: ph ? 'https://wa.me/' + ph + '?text=' + encodeURIComponent(draft || '') : undefined }); } return;
       } catch (e) { lastErr = 'inbox ' + e.message; await new Promise(r => setTimeout(r, 4000)); }
     }
   }

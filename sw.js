@@ -10,6 +10,7 @@ self.addEventListener('push', e => {
 self.addEventListener('notificationclick', e => {
   e.notification.close();
   const url = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  if (url.indexOf(self.registration.scope) !== 0) { e.waitUntil(self.clients.openWindow(url)); return; }   // رابط واتساب: يفتح المحادثة والرد مكتوب
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => {
     for (const c of cs) { if (c.url.indexOf(self.registration.scope) === 0) { if (c.navigate) c.navigate(url); return c.focus(); } }
     return self.clients.openWindow(url);
