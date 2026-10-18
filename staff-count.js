@@ -15,6 +15,10 @@
   const cfg = s => (C.st && C.st.cfg && C.st.cfg[s]) || {};
   const item = s => (C.items || []).find(i => i.s === s);
   const isW = it => !!UNITW[it.u];
+  // أصناف وحدتها في فودكس علبة/باكيت فيها حبات (ماء نوفا 24، أعواد سكر 500...): يُعدّ العلب + الحبات السائبة ونحوّلها لوحدة فودكس
+  const isPK = it => /^(box|pack)$/i.test(it.u) && +it.f > 1 && /^(pcs|p)$/i.test(it.iu || '');
+  // آخر جرد سابق للصنف (للتنبيه فقط، لا يُعرض قبل العدّ)
+  const prevQ = s => { const h = (C.st && C.st.hist) || []; for (const x of h) { const l = x && x.lines && x.lines[s]; if (l && l.q != null) return +l.q; } return null; };
 
   C.load = async function (api) {
     if (!C.items) { try { const r = await fetch('count-items.json?v=' + Date.now()); C.items = (await r.json()).items || []; } catch (e) { C.items = []; } }
@@ -67,7 +71,15 @@
     const l = lines()[it.s] || {}; const cf = cfg(it.s); const w = isW(it); const u = esc(it.u);
     const pc = l.pc != null ? l.pc : (cf.pc != null ? cf.pc : '');
     const t = l.t != null ? l.t : (cf.t != null ? cf.t : '');
-    const body = w ? `
+    const pk = !w && isPK(it); const F = +it.f;
+    const had = lines()[it.s];
+    const prevBox = had ? `<div class="note" style="background:#FFF4D6;border:1px solid #F0D58A;border-radius:12px;padding:.55rem .7rem;margin:.6rem 0 0">${T('محفوظ لهذا الصنف', 'Already saved')}: <b>${fmt(had.q)} ${u}</b>${had.note ? ' (📍' + esc(had.note) + ')' : ''}<label style="display:flex;gap:8px;align-items:center;margin-top:.45rem;font-weight:700;color:var(--ink)"><input type="checkbox" id="cadd" style="width:22px;height:22px"> ${T('هذا مكان ثاني: أضف على المحفوظ', 'Another place: add to the saved amount')}</label><small>${T('بدون صح: الرقم الجديد يستبدل المحفوظ (للتصحيح).', 'Unticked: the new number replaces the saved one (to correct it).')}</small></div>` : '';
+    const body = pk ? `
+      <div class="note" style="background:#E8F3EE;border-radius:12px;padding:.55rem .7rem">${T('فودكس يحسب هذا الصنف بالـ', 'Foodics counts this item in ')}<b>${u}</b>${T('، والـ' + u + ' فيه ', '; one ' + u + ' = ')}<b>${F}</b> ${T('حبة', 'pcs')}.</div>
+      <label class="lb">${T(u + ' كاملة مقفلة', 'Full sealed ' + u)}</label><input id="cc" inputmode="decimal" value="${esc(l.c != null ? l.c : '')}" placeholder="0">
+      <label class="lb">${T('حبات سائبة من ' + u + ' مفتوح', 'Loose pieces from an open ' + u)}</label><input id="cl" inputmode="decimal" value="${esc(l.l != null ? l.l : '')}" placeholder="0">
+      <label class="lb">${T('أو اكتب المجموع مباشرة (بالـ' + u + ')', 'Or type the total directly (in ' + u + ')')}</label><input id="cd" inputmode="decimal" placeholder="${u}">`
+      : w ? `
       <div class="note">${T('زِن كل كيس أو حاوية واضغط «أضف». الصافي = المجموع − (عدد الأكياس × وزن الكيس الفارغ).', 'Weigh each bag/container and add it. Net = total − (bags × empty bag weight).')}</div>
       <label class="lb">${T('الوزن القائم لكيس واحد (كجم)', 'Gross weight of one bag (kg)')}</label>
       <div style="display:flex;gap:6px"><input id="cw" inputmode="decimal" placeholder="${T('مثلاً 24.6', 'e.g. 24.6')}"><button class="btn" data-c="addw" style="width:auto;margin:0;padding:.6rem 1rem">＋ ${T('أضف', 'Add')}</button></div>
@@ -81,9 +93,10 @@
       <label class="lb">${T('أو اكتب المجموع مباشرة', 'Or type the total directly')}</label><input id="cd" inputmode="decimal" placeholder="${T('المجموع', 'total')} ${u}">`;
     return `<div id="sheet" ${DIR().replace('style="', 'style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;display:flex;align-items:flex-end;')}><div style="background:var(--bg);width:100%;max-width:640px;margin:0 auto;border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom));max-height:92vh;overflow:auto">
       <div style="display:flex;align-items:flex-start;gap:8px"><div style="flex:1"><b style="font-size:1.08rem">${esc(nm(it))}</b><div class="note" style="margin:0">${esc(nm2(it))} · ${esc(it.s)} · ${T('الوحدة', 'unit')} <b>${u}</b>${cf.loc ? ' · 📍' + esc(cf.loc) : ''}</div></div><button class="btn s" data-c="close" style="width:auto;margin:0;padding:.4rem .8rem">✕</button></div>
+      ${prevBox}
       ${body}
       <label class="lb">${T('المكان (اختياري)', 'Shelf / place (optional)')}</label><input id="cloc" value="${esc(cf.loc || '')}" placeholder="${T('مثلاً مستودع رف 2', 'e.g. Store A2')}">
-      <div style="background:#fff;border:1px solid var(--rule);border-radius:14px;padding:.7rem;margin-top:.7rem;text-align:center"><small style="color:var(--ink3)">${T('الكمية اللي بتنحفظ', 'Total to save')}</small><div id="ctot" style="font-size:1.6rem;font-weight:800">—</div><small>${u}</small></div>
+      <div style="background:#fff;border:1px solid var(--rule);border-radius:14px;padding:.7rem;margin-top:.7rem;text-align:center"><small style="color:var(--ink3)">${T('الكمية اللي بتنحفظ', 'Total to save')}</small><div id="ctot" style="font-size:1.6rem;font-weight:800">—</div><small>${u}</small><div id="cwarn" style="display:none;color:#B03A2E;font-size:.85rem;font-weight:700;margin-top:.35rem"></div></div>
       <button class="btn" data-c="save" style="font-size:1.05rem">✓ ${T('حفظ', 'Save')}</button>
       ${lines()[it.s] ? `<button class="btn s" data-c="del">${T('حذف الجرد لهذا الصنف', 'Remove this count')}</button>` : ''}
       <style>.lb{display:block;font-size:.8rem;color:var(--ink3);margin:.55rem 0 .2rem}</style></div></div>`;
@@ -91,11 +104,16 @@
   let W = [];
   function total() {
     const it = item(C.edit); if (!it) return null; const v = id => n((document.getElementById(id) || {}).value);
+    const add = (document.getElementById('cadd') || {}).checked && lines()[it.s] ? +lines()[it.s].q || 0 : 0;
+    const x = part(it, v); return x == null ? null : r4(x + add);
+  }
+  function part(it, v) {
     const d = v('cd'); if (d != null) return r4(d);
+    if (isPK(it)) { const c = v('cc'), l = v('cl'); if (c == null && l == null) return null; return r4((c || 0) + (l || 0) / +it.f); }
     if (isW(it)) { if (!W.length) return null; const t = v('ct') || 0; return r4(Math.max(0, W.reduce((a, x) => a + x, 0) - W.length * t)); }
     const c = v('cc'), p = v('cp'), l = v('cl'); if (c == null && l == null) return null; if (c && p == null) return null; return r4((c || 0) * (p || 0) + (l || 0));
   }
-  function upd() { const el = document.getElementById('ctot'); if (!el) return; const t = total(); el.textContent = t == null ? '—' : fmt(t); const it = item(C.edit); if (it && isW(it)) { const wl = document.getElementById('wl'); if (wl) wl.innerHTML = W.map((x, k) => `<button data-wdel="${k}">${fmt(x)} ✕</button>`).join('') + (W.length ? `<small style="align-self:center;color:var(--ink3)">${W.length} ${T('كيس', 'bag(s)')} · ${fmt(W.reduce((a, x) => a + x, 0))} ${UNITW[it.u]}</small>` : ''); } }
+  function upd() { const el = document.getElementById('ctot'); if (!el) return; const t = total(); el.textContent = t == null ? '—' : fmt(t); C.warned = null; const wn = document.getElementById('cwarn'); if (wn) wn.style.display = 'none'; const it = item(C.edit); if (it && isW(it)) { const wl = document.getElementById('wl'); if (wl) wl.innerHTML = W.map((x, k) => `<button data-wdel="${k}">${fmt(x)} ✕</button>`).join('') + (W.length ? `<small style="align-self:center;color:var(--ink3)">${W.length} ${T('كيس', 'bag(s)')} · ${fmt(W.reduce((a, x) => a + x, 0))} ${UNITW[it.u]}</small>` : ''); } }
   C.open = function (sku) {
     const it = item(sku); if (!it) { window.DALTOAST(T('ملصق غير معروف: ', 'Unknown label: ') + sku); return; }
     C.edit = sku; W = ((lines()[sku] || {}).w || []).slice(); const old = document.getElementById('sheet'); if (old) old.remove();
@@ -106,9 +124,19 @@
   async function save() {
     const it = item(C.edit); const q = total(); if (q == null) { window.DALTOAST(T('أدخل الكمية أولاً', 'Enter a quantity first')); return; }
     const v = id => n((document.getElementById(id) || {}).value); const loc = ((document.getElementById('cloc') || {}).value || '').trim();
-    const body = isW(it) ? { op: 'line', sku: it.s, q, w: W, b: W.length, t: v('ct') } : { op: 'line', sku: it.s, q, c: v('cc'), pc: v('cp'), l: v('cl') };
+    const adding = !!(document.getElementById('cadd') || {}).checked && !!lines()[it.s];
+    // تنبيه: الرقم بعيد جداً عن آخر جرد (غالباً خطأ وحدة: حبات بدل علب، جرام بدل كيلو)
+    const pq = prevQ(it.s);
+    if (pq != null && pq > 0 && (q > pq * 3 || q < pq / 3) && C.warned !== it.s + ':' + q) {
+      C.warned = it.s + ':' + q; const wn = document.getElementById('cwarn');
+      if (wn) { wn.textContent = T('⚠ الرقم بعيد جداً عن آخر جرد. تأكد من الوحدة (' + it.u + ') ثم اضغط حفظ مرة ثانية.', '⚠ Very different from the last count. Check the unit (' + it.u + '), then tap Save again.'); wn.style.display = 'block'; }
+      if (navigator.vibrate) navigator.vibrate([60, 60, 60]); return;
+    }
+    const oldNote = adding ? (lines()[it.s].note || '') : '';
+    const note = (adding ? [oldNote || '—', loc || '—'].join(' + ') : loc).slice(0, 120);
+    const body = isW(it) ? { op: 'line', sku: it.s, q, w: W, b: W.length, t: v('ct'), note } : isPK(it) ? { op: 'line', sku: it.s, q, c: v('cc'), l: v('cl'), note } : { op: 'line', sku: it.s, q, c: v('cc'), pc: v('cp'), l: v('cl'), note };
     const cf = cfg(it.s); const cb = { op: 'cfg', sku: it.s };
-    if (isW(it)) { if (v('ct') != null && v('ct') !== cf.t) cb.t = v('ct'); } else if (v('cp') != null && v('cp') !== cf.pc) cb.pc = v('cp');
+    if (isW(it)) { if (v('ct') != null && v('ct') !== cf.t) cb.t = v('ct'); } else if (!isPK(it) && v('cp') != null && v('cp') !== cf.pc) cb.pc = v('cp');
     if (loc !== (cf.loc || '')) cb.loc = loc;
     // تحديث محلي فوري ثم إرسال (مع إعادة المحاولة عند انقطاع النت)
     C.st = C.st || { cfg: {}, cur: null, hist: [] }; C.st.cur = C.st.cur || { id: 'new', by: '', lines: {} }; C.st.cur.lines[it.s] = Object.assign({}, body, { at: new Date().toISOString() });
@@ -173,7 +201,7 @@
     else if (c === 'new') { if (!confirm(T('بدء جرد جديد؟ الجرد الحالي يُحفظ في السجل.', 'Start a new count? The current one is kept in history.'))) return; try { await post({ op: 'new' }); window.DALRENDER(); window.DALTOAST(T('✓ جرد جديد', '✓ New count')); } catch (x) { window.DALTOAST(T('تعذّر', 'Failed')); } }
   });
   document.addEventListener('input', e => {
-    if (e.target.closest && e.target.closest('#sheet')) { upd(); return; }
+    if (e.target.closest && e.target.closest('#sheet')) { if (e.target.id === 'cadd' && e.target.checked) { ['cc', 'cl', 'cd', 'cw'].forEach(k => { const f = document.getElementById(k); if (f) f.value = ''; }); W = []; } upd(); return; }
     if (e.target.id === 'cq') { C.q = e.target.value; clearTimeout(C.qt); C.qt = setTimeout(() => { const el = document.getElementById('cq'); const pos = el ? el.selectionStart : 0; window.DALRENDER(); const nn = document.getElementById('cq'); if (nn) { nn.focus(); nn.setSelectionRange(pos, pos); } }, 250); }
   });
   document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'cw') { e.preventDefault(); const bb = document.querySelector('[data-c="addw"]'); if (bb) bb.click(); } });
