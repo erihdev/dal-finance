@@ -13,7 +13,8 @@
   const hm = d => ksa(d).toISOString().slice(11, 16);
   const MN = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
   const dName = s => { const today = day(Date.now()), y = day(Date.now() - 864e5); if (s === today) return 'اليوم'; if (s === y) return 'أمس'; const [Y, M, D] = s.split('-'); return +D + ' ' + MN[+M - 1]; };
-  const list = () => ((window.DALD().roast_log || {}).list) || [];
+  const DOC = t => t === 'ext' ? 'roast_ext' : 'roast_log';   // دال والعملاء الخارجيين في مستندين منفصلين، لا يختلطان أبداً
+  const list = () => ((window.DALD()[DOC(R.t)] || {}).list) || [];
   const origins = () => ((window.DALD().stock || {}).items) || [];
 
   const CSS = `<style id="rl-css">
@@ -32,15 +33,17 @@
   .rl-ext{font-size:.66rem;background:#FEF3C7;color:#92400E;border-radius:6px;padding:1px 6px;margin-inline-start:4px;font-weight:700}
   </style>`;
 
-  R.view = function (canEdit) {
+  R.view = function (can) {
+    const okD = can('roast', 'view'), okX = can('roastx', 'view'); if (R.t === 'dal' && !okD) R.t = 'ext'; if (R.t === 'ext' && !okX) R.t = 'dal';
+    const canEdit = can(R.t === 'ext' ? 'roastx' : 'roast', 'edit'); const ext = R.t === 'ext';
     const L = list(); const today = day(Date.now());
-    const td = L.filter(x => day(x.at) === today && x.t !== 'ext');
+    const td = L.filter(x => day(x.at) === today);
     const g = td.reduce((a, x) => a + (+x.g || 0), 0), r = td.reduce((a, x) => a + (+x.r || 0), 0);
-    const ym = today.slice(0, 7); const mo = L.filter(x => day(x.at).slice(0, 7) === ym && x.t !== 'ext');
+    const ym = today.slice(0, 7); const mo = L.filter(x => day(x.at).slice(0, 7) === ym);
     const mg = mo.reduce((a, x) => a + (+x.g || 0), 0), mr = mo.reduce((a, x) => a + (+x.r || 0), 0);
     const p = loss(num(R.g), num(R.r));
-    const form = !canEdit ? '' : `<div class="rl-tg">${[['dal', 'بن دال'], ['ext', 'عميل خارجي']].map(x => `<button data-rt="${x[0]}" aria-pressed="${R.t === x[0]}">${x[1]}</button>`).join('')}</div>
-      <div class="rl-f">${R.t === 'dal'
+    const tabs = okD && okX ? `<div class="rl-tg">${[['dal', 'بن دال'], ['ext', 'العملاء الخارجيين']].map(x => `<button data-rt="${x[0]}" aria-pressed="${R.t === x[0]}">${x[1]}</button>`).join('')}</div>` : '';
+    const form = !canEdit ? '' : `<div class="rl-f" style="margin-top:.6rem">${R.t === 'dal'
         ? `<label for="rl-o">المحصول</label><select id="rl-o"><option value="">اختر المحصول</option>${origins().map(o => `<option value="${esc(o.id)}" ${R.o === o.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select>`
         : `<label for="rl-c">اسم العميل والمحصول</label><input id="rl-c" value="${esc(R.c)}" placeholder="مثلاً: محمد · كولومبي">`}
         <div class="rl-two"><div><label for="rl-g">الأخضر (كجم)</label><input id="rl-g" inputmode="decimal" value="${esc(R.g)}" placeholder="0"></div><div><label for="rl-r">المحمّص (كجم)</label><input id="rl-r" inputmode="decimal" value="${esc(R.r)}" placeholder="0"></div></div>
@@ -51,8 +54,8 @@
     const sum = `<div class="rl-sum"><div><small>دفعات اليوم</small><b>${td.length}</b></div><div><small>أخضر اليوم</small><b>${f1(g)}</b></div><div><small>محمّص اليوم</small><b>${f1(r)}</b></div><div><small>فاقد الشهر</small><b>${mg > 0 ? ((mg - mr) / mg * 100).toFixed(1) + '%' : '—'}</b></div></div>`;
     const groups = {}; L.slice(0, 120).forEach(x => { (groups[day(x.at)] = groups[day(x.at)] || []).push(x); });
     const rows = Object.keys(groups).sort().reverse().map(d => `<div class="rl-d">${dName(d)}</div>` + groups[d].map(x => { const lp = loss(+x.g, +x.r);
-      return `<div class="rl-it"><span class="tm">${hm(x.at)}</span><div class="t"><b>${esc(x.t === 'ext' ? x.c : (x.on || x.o))}${x.t === 'ext' ? '<span class="rl-ext">خارجي</span>' : ''}</b><small>${f1(x.g)} ← ${f1(x.r)} كجم · ${esc(x.by || '')}${x.n ? ' · ' + esc(x.n) : ''}</small></div><span class="p ${odd(lp) ? 'w' : ''}">${lp == null ? '—' : lp.toFixed(1) + '%'}</span>${canEdit && day(x.at) === today ? `<button class="rl-x" data-rdel="${esc(x.id)}" aria-label="حذف">✕</button>` : ''}</div>`; }).join('')).join('');
-    return CSS + `<h2>🔥 سجل التحميص</h2>${form}${sum}${rows || '<div class="note">ما فيه دفعات مسجّلة بعد.</div>'}`;
+      return `<div class="rl-it"><span class="tm">${hm(x.at)}</span><div class="t"><b>${esc(ext ? x.c : (x.on || x.o))}</b><small>${f1(x.g)} ← ${f1(x.r)} كجم · ${esc(x.by || '')}${x.n ? ' · ' + esc(x.n) : ''}</small></div><span class="p ${odd(lp) ? 'w' : ''}">${lp == null ? '—' : lp.toFixed(1) + '%'}</span>${canEdit && day(x.at) === today ? `<button class="rl-x" data-rdel="${esc(x.id)}" aria-label="حذف">✕</button>` : ''}</div>`; }).join('')).join('');
+    return CSS + `<h2>🔥 ${ext ? 'تحميص العملاء الخارجيين' : 'سجل تحميص دال'}</h2>${ext ? '<div class="note">منفصل تماماً عن بن دال ولا يدخل في مخزونها ولا أرقامها.</div>' : ''}${tabs}${form}${sum}${rows || '<div class="note">ما فيه دفعات مسجّلة بعد.</div>'}`;
   };
 
   function upd() { const p = loss(num(R.g), num(R.r)); const el = document.getElementById('rl-ls'); if (!el) return; el.classList.toggle('w', odd(p)); el.innerHTML = `<small>${odd(p) ? 'الفاقد غير معتاد، تأكد من الوزن' : 'الفاقد'}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b>`; }
@@ -60,7 +63,7 @@
   document.addEventListener('change', e => { if (e.target.id === 'rl-o') R.o = e.target.value; });
   document.addEventListener('click', async e => {
     const tg = e.target.closest('[data-rt]'); if (tg) { R.t = tg.getAttribute('data-rt'); window.DALRENDER(); return; }
-    const dl = e.target.closest('[data-rdel]'); if (dl) { if (!confirm('حذف هذه الدفعة؟')) return; try { const r = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'del', id: dl.getAttribute('data-rdel') }) }); if (r.ok) { window.DALD().roast_log = r.log; window.DALRENDER(); window.DALTOAST('✓ انحذفت'); } else window.DALTOAST(r.err || 'تعذّر'); } catch (x) { window.DALTOAST('تعذّر'); } return; }
+    const dl = e.target.closest('[data-rdel]'); if (dl) { if (!confirm('حذف هذه الدفعة؟')) return; try { const r = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'del', t: R.t, id: dl.getAttribute('data-rdel') }) }); if (r.ok) { window.DALD()[DOC(R.t)] = r.log; window.DALRENDER(); window.DALTOAST('✓ انحذفت'); } else window.DALTOAST(r.err || 'تعذّر'); } catch (x) { window.DALTOAST('تعذّر'); } return; }
     const b = e.target.closest('[data-rc="add"]'); if (!b || R.busy) return;
     const g = num(R.g), r = num(R.r);
     if (R.t === 'dal' && !R.o) return window.DALTOAST('اختر المحصول');
@@ -72,7 +75,7 @@
     try {
       const res = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'add', t: R.t, o: R.o, on: o ? o.name : '', c: R.c.trim(), g, r, n: R.n.trim() }) });
       if (!res.ok) throw new Error(res.err || 'تعذّر');
-      window.DALD().roast_log = res.log; Object.assign(R, { g: '', r: '', n: '', c: '' }); window.DALTOAST('✓ انسجّلت الدفعة');
+      window.DALD()[DOC(R.t)] = res.log; Object.assign(R, { g: '', r: '', n: '', c: '' }); window.DALTOAST('✓ انسجّلت الدفعة');
     } catch (x) { window.DALTOAST('تعذّر الحفظ — ' + x.message); }
     R.busy = false; window.DALRENDER();
   });

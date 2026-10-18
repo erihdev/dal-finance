@@ -427,7 +427,7 @@ async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BO
 
 // ===== بوابة الموظفين: حسابات برموز PIN وصلاحيات لكل صفحة (يشوف/يعدّل)، تُفرض هنا على الخادم لا في المتصفح =====
 const crypto2 = require('crypto');
-const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state'], roast: ['roast_log', 'stock'] };
+const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state'], roast: ['roast_log', 'stock'], roastx: ['roast_ext'] };
 const loginHits = new Map();   // ip -> [timestamps]
 function staffToken(id, exp) { return id + '.' + exp + '.' + crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40); }
 function staffVerify(tok) { const [id, exp, sig] = String(tok || '').split('.'); if (!id || !exp || !sig) return null; if (+exp < Date.now()) return null; const ok = crypto2.timingSafeEqual(Buffer.from(sig), Buffer.from(crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40))); return ok ? id : null; }
@@ -475,14 +475,14 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       else throw new Error('op');
       st.at = now; await gas({ op: 'set', path: 'live/count_state', data: st }); return json(200, { ok: true, state: st });
     }); } catch (e) { return json(400, { ok: false, err: String(e.message || e) }); } }
-  if (path === '/staff/roast' && req.method === 'POST') { if (!can('roast', 'edit')) return json(403, { ok: false, err: 'forbidden' });   // سجل التحميص: إضافة دفعة / حذف دفعة اليوم
-    try { const j = JSON.parse(await readBody(req, 2e4) || '{}'); const r = await gas({ op: 'get', paths: ['live/roast_log'] }); const d = r.docs && r.docs['live/roast_log']; const lg = Object.assign({ list: [] }, (d && d.data) || {}); const now = new Date().toISOString(); const n = v => { const x = Number(v); return isFinite(x) ? Math.round(x * 1000) / 1000 : null; };
-      if (j.op === 'add') { const t = j.t === 'ext' ? 'ext' : 'dal'; const g = n(j.g), rr = n(j.r); if (!(g > 0) || !(rr > 0) || rr > g || g > 200) throw new Error('weight'); if (t === 'dal' && !j.o) throw new Error('origin'); if (t === 'ext' && !String(j.c || '').trim()) throw new Error('customer');
+  if (path === '/staff/roast' && req.method === 'POST') {   // سجل التحميص: دال في live/roast_log والعملاء الخارجيين في live/roast_ext — مستندان منفصلان بصلاحيتين
+    try { const j = JSON.parse(await readBody(req, 2e4) || '{}'); const X = j.t === 'ext'; if (!can(X ? 'roastx' : 'roast', 'edit')) return json(403, { ok: false, err: 'forbidden' }); const P = X ? 'live/roast_ext' : 'live/roast_log'; const r = await gas({ op: 'get', paths: [P] }); const d = r.docs && r.docs[P]; const lg = Object.assign({ list: [] }, (d && d.data) || {}); const now = new Date().toISOString(); const n = v => { const x = Number(v); return isFinite(x) ? Math.round(x * 1000) / 1000 : null; };
+      if (j.op === 'add') { const t = X ? 'ext' : 'dal'; const g = n(j.g), rr = n(j.r); if (!(g > 0) || !(rr > 0) || rr > g || g > 200) throw new Error('weight'); if (t === 'dal' && !j.o) throw new Error('origin'); if (t === 'ext' && !String(j.c || '').trim()) throw new Error('customer');
         const it = { id: 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t, o: t === 'dal' ? String(j.o).slice(0, 60) : undefined, on: t === 'dal' ? String(j.on || '').slice(0, 80) : undefined, c: t === 'ext' ? String(j.c).slice(0, 80) : undefined, g, r: rr, n: String(j.n || '').slice(0, 120) || undefined, by: me.name, at: now };
         lg.list = [it].concat(lg.list || []).slice(0, 3000); await staffLog(me.name, 'roast', (t === 'ext' ? 'خارجي ' + it.c : it.on || it.o) + ' ' + g + '→' + rr); }
       else if (j.op === 'del') { const it = (lg.list || []).find(x => x.id === j.id); if (!it) throw new Error('nf'); const dd = x => new Date(new Date(x).getTime() + 3 * 3600e3).toISOString().slice(0, 10); if (dd(it.at) !== dd(now)) return json(403, { ok: false, err: 'الحذف لدفعات اليوم فقط' }); lg.list = lg.list.filter(x => x.id !== j.id); await staffLog(me.name, 'roast', 'حذف دفعة ' + (it.on || it.c || '') + ' ' + it.g + '→' + it.r); }
       else throw new Error('op');
-      lg.at = now; await gas({ op: 'set', path: 'live/roast_log', data: lg }); return json(200, { ok: true, log: lg }); } catch (e) { return json(400, { ok: false, err: e.message || 'error' }); } }
+      lg.at = now; await gas({ op: 'set', path: P, data: lg }); return json(200, { ok: true, log: lg }); } catch (e) { return json(400, { ok: false, err: e.message || 'error' }); } }
   if (path === '/staff/log' && req.method === 'POST') { try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); await staffLog(me.name, String(j.action || 'note').slice(0, 30), j.detail); return json(200, { ok: true }); } catch (e) { return json(400, { ok: false }); } }
   return json(404, { ok: false, err: 'no' });
 }
