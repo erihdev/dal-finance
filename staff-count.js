@@ -127,7 +127,7 @@
         const m = String(txt).trim().match(/^DAL:(.+)$/i); const sku = m ? m[1].trim() : String(txt).trim();
         if (navigator.vibrate) navigator.vibrate(80); stopScan().then(() => C.open(sku));
       }, () => {});
-    } catch (e) { C.scan = null; window.DALRENDER(); window.DALTOAST('Allow camera access, then try again · اسمح بالكاميرا'); }
+    } catch (e) { try { if (C.h) C.h.clear(); } catch (x) {} C.h = null; C.scan = null; window.DALRENDER(); window.DALTOAST('Allow camera access, then try again · اسمح بالكاميرا'); }
   }
   async function stopScan() { try { if (C.h) { await C.h.stop(); C.h.clear(); } } catch (e) {} C.h = null; C.scan = null; const box = document.getElementById('scanbox'); if (box) box.style.display = 'none'; }
 
