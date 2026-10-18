@@ -427,13 +427,14 @@ async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BO
 
 // ===== بوابة الموظفين: حسابات برموز PIN وصلاحيات لكل صفحة (يشوف/يعدّل)، تُفرض هنا على الخادم لا في المتصفح =====
 const crypto2 = require('crypto');
-const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'] };
+const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state'] };
 const loginHits = new Map();   // ip -> [timestamps]
 function staffToken(id, exp) { return id + '.' + exp + '.' + crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40); }
 function staffVerify(tok) { const [id, exp, sig] = String(tok || '').split('.'); if (!id || !exp || !sig) return null; if (+exp < Date.now()) return null; const ok = crypto2.timingSafeEqual(Buffer.from(sig), Buffer.from(crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40))); return ok ? id : null; }
 async function staffList() { try { const r = await gas({ op: 'get', paths: ['live/staff'] }); const d = r.docs && r.docs['live/staff']; return (d && d.data && Array.isArray(d.data.users)) ? d.data.users : []; } catch (e) { return []; } }
 async function staffLog(who, action, detail) { try { const r = await gas({ op: 'get', paths: ['live/staff_log'] }); const d = r.docs && r.docs['live/staff_log']; const L = (d && d.data && Array.isArray(d.data.items)) ? d.data.items : []; L.unshift({ t: new Date().toISOString(), who, action, detail: String(detail || '').slice(0, 160) }); await gas({ op: 'set', path: 'live/staff_log', data: { at: new Date().toISOString(), items: L.slice(0, 500) } }); } catch (e) {} }
 function sha(s) { return crypto2.createHash('sha256').update(s).digest('hex'); }
+let countBusy = Promise.resolve(); function countQueue(fn) { const p = countBusy.then(fn, fn); countBusy = p.catch(() => {}); return p; }
 async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترجع true إذا عالجت الطلب
   cors(req, res);
   const u = new URL(req.url, 'http://x'); const path = u.pathname; const json = (code, o) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(o)); };
@@ -446,7 +447,8 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
   if (path === '/staff/users' && req.method === 'GET') { const users = await staffList(); return json(200, { ok: true, users: users.filter(x => x.active !== false).map(x => ({ id: x.id, name: x.name })) }); }   // أسماء فقط لشاشة الدخول
   const id = staffVerify((req.headers.authorization || '').replace(/^Bearer /i, '')); if (!id) return json(401, { ok: false, err: 'login' });
   const users = await staffList(); const me = users.find(x => x.id === id && x.active !== false); if (!me) return json(401, { ok: false, err: 'disabled' });
-  const roles = me.roles || {}; const can = (page, lvl) => roles[page] === 'edit' || (lvl === 'view' && roles[page] === 'view');
+  const roles = Object.assign({}, me.roles || {}); if (!roles.count && roles.stock === 'edit') roles.count = 'edit';   // الجرد: من يعدّل المحاصيل يجرد
+  const can = (page, lvl) => roles[page] === 'edit' || (lvl === 'view' && roles[page] === 'view');
   if (path === '/staff/me') return json(200, { ok: true, user: { id: me.id, name: me.name, roles } });
   if (path === '/staff/docs' && req.method === 'GET') {   // قراءة المستندات المسموحة فقط
     const want = String(u.searchParams.get('names') || '').split(',').filter(Boolean); const allowed = new Set(); for (const [pg, docs] of Object.entries(STAFF_PAGES)) if (can(pg, 'view')) docs.forEach(d => allowed.add(d));
@@ -459,6 +461,17 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
     try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); const r = await gas({ op: 'get', paths: ['live/stock_state'] }); const d = r.docs && r.docs['live/stock_state']; const st = Object.assign({ q: {}, st: {}, n: {} }, (d && d.data) || {}); if (j.st) st.st[j.id] = j.st; if (j.q != null) st.q[j.id] = j.q; if (j.n != null) st.n[j.id] = j.n; st.at = new Date().toISOString(); st.by = me.name; await gas({ op: 'set', path: 'live/stock_state', data: st }); await staffLog(me.name, 'stock', (j.id || '') + ' → ' + (j.st || '') + (j.q != null ? ' / ' + j.q : '')); return json(200, { ok: true }); } catch (e) { return json(500, { ok: false, err: 'db' }); } }
   if (path === '/staff/sent' && req.method === 'POST') { if (!can('messages', 'edit')) return json(403, { ok: false, err: 'forbidden' });
     try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); const r = await gas({ op: 'get', paths: ['live/crm_state'] }); const d = r.docs && r.docs['live/crm_state']; const st = Object.assign({ sent: {}, opt: {}, tag: {}, note: {}, tpl: {} }, (d && d.data) || {}); (st.sent[j.k] = st.sent[j.k] || {})[j.t || 'generic'] = new Date().toISOString().slice(0, 10); await gas({ op: 'set', path: 'live/crm_state', data: st }); await staffLog(me.name, 'message', (j.name || j.k) + ' · ' + (j.t || '')); return json(200, { ok: true }); } catch (e) { return json(500, { ok: false, err: 'db' }); } }
+  if (path === '/staff/count' && req.method === 'POST') { if (!can('count', 'edit')) return json(403, { ok: false, err: 'forbidden' });   // الجرد بالكاميرا: سطر جرد / إعداد صنف / جرد جديد
+    try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); return await countQueue(async () => {
+      const r = await gas({ op: 'get', paths: ['live/count_state'] }); const d = r.docs && r.docs['live/count_state']; const st = Object.assign({ cfg: {}, cur: null, hist: [] }, (d && d.data) || {});
+      const now = new Date().toISOString(); const sku = String(j.sku || '').slice(0, 40); const num = v => (v === '' || v == null || !isFinite(+v)) ? null : Math.round(+v * 10000) / 10000;
+      if (!st.cur) st.cur = { id: 'C' + now.slice(0, 10).replace(/-/g, '') + '-' + now.slice(11, 16).replace(':', ''), started: now, by: me.name, lines: {} };
+      if (j.op === 'line') { if (!sku) throw new Error('sku'); if (j.del) delete st.cur.lines[sku]; else { const q = num(j.q); if (q == null || q < 0) throw new Error('qty'); st.cur.lines[sku] = { q, c: num(j.c), pc: num(j.pc), l: num(j.l), w: Array.isArray(j.w) ? j.w.slice(0, 60).map(num).filter(x => x != null) : null, b: num(j.b), t: num(j.t), note: String(j.note || '').slice(0, 120), by: me.name, at: now }; } await staffLog(me.name, 'count', sku + ' = ' + (j.del ? 'حذف' : j.q)); }
+      else if (j.op === 'cfg') { if (!sku) throw new Error('sku'); const c = st.cfg[sku] = Object.assign({}, st.cfg[sku] || {}); if (j.pc !== undefined) c.pc = num(j.pc); if (j.t !== undefined) c.t = num(j.t); if (j.loc !== undefined) c.loc = String(j.loc || '').slice(0, 30); }
+      else if (j.op === 'new') { if (st.cur && Object.keys(st.cur.lines || {}).length) { st.cur.closed = now; st.cur.closedBy = me.name; st.hist = [st.cur].concat(st.hist || []).slice(0, 12); } st.cur = { id: 'C' + now.slice(0, 10).replace(/-/g, '') + '-' + now.slice(11, 16).replace(':', ''), started: now, by: me.name, lines: {} }; await staffLog(me.name, 'count', 'جرد جديد'); }
+      else throw new Error('op');
+      st.at = now; await gas({ op: 'set', path: 'live/count_state', data: st }); return json(200, { ok: true, state: st });
+    }); } catch (e) { return json(400, { ok: false, err: String(e.message || e) }); } }
   if (path === '/staff/log' && req.method === 'POST') { try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); await staffLog(me.name, String(j.action || 'note').slice(0, 30), j.detail); return json(200, { ok: true }); } catch (e) { return json(400, { ok: false }); } }
   return json(404, { ok: false, err: 'no' });
 }
