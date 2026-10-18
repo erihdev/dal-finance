@@ -38,6 +38,7 @@ label.up{display:block}label.up input{display:none}
 <nav id="nav" style="display:none"></nav>
 <div class="toast" id="toast"></div>
 <script src="staff-count.js?v=5"></script>
+<script src="staff-roast.js?v=1"></script>
 <script>
 const SRV='https://browser-production-10fb.up.railway.app';
 const $=s=>document.querySelector(s);const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -49,9 +50,9 @@ let TOK='',ME=null,D={},tab='',flt='all',q='',busy=false;try{TOK=localStorage.ge
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');setTimeout(()=>e.classList.remove('on'),2200);}
 async function api(path,opt){const r=await fetch(SRV+path,Object.assign({headers:Object.assign({'content-type':'application/json'},TOK?{Authorization:'Bearer '+TOK}:{})},opt||{}));if(r.status===401){logout();throw new Error('login');}return r.json();}
 function logout(){TOK='';ME=null;try{localStorage.removeItem('dal-staff-tok');localStorage.removeItem('dal-staff-me');}catch(e){}render();}
-const PAGES=[['invoices','🧾','الفواتير'],['stock','🫘','المحاصيل'],['count','📦','الجرد'],['customers','👥','العملاء'],['messages','✉️','الرسائل']];
+const PAGES=[['invoices','🧾','الفواتير'],['stock','🫘','المحاصيل'],['roast','🔥','التحميص'],['count','📦','الجرد'],['customers','👥','العملاء'],['messages','✉️','الرسائل']];
 const can=(p,l)=>{if(!ME||!ME.roles)return false;const r=ME.roles[p]||(p==='count'&&ME.roles.stock==='edit'?'edit':'');return r==='edit'||(l==='view'&&r==='view');};
-async function load(){const need=new Set();if(can('invoices','view'))need.add('invoices');if(can('stock','view')){need.add('stock');need.add('stock_state');}if(can('customers','view')||can('messages','view')){['cust_meta','cust_salla','cust_wa','customers','crm_state'].forEach(x=>need.add(x));}
+async function load(){const need=new Set();if(can('invoices','view'))need.add('invoices');if(can('stock','view')){need.add('stock');need.add('stock_state');}if(can('roast','view')){need.add('roast_log');need.add('stock');}if(can('customers','view')||can('messages','view')){['cust_meta','cust_salla','cust_wa','customers','crm_state'].forEach(x=>need.add(x));}
   if(can('count','view')&&window.DALC)await DALC.load(api);
   if(!need.size){render();return;}try{const r=await api('/staff/docs?names='+[...need].join(','));if(r.ok)D=Object.assign(D,r.docs||{});}catch(e){}render();}
 /* ---------- الدخول ---------- */
@@ -97,7 +98,7 @@ function custView(){const L=custList();const d=dig(q);const R=q?L.filter(c=>(c.n
 function render(){if(tab==='count'&&window.DALC&&(DALC.scan||DALC.edit))return;if(!ME||!TOK){$('#hd').style.display='none';$('#nav').style.display='none';loginView();return;}
   $('#hd').style.display='';$('#who').textContent=ME.name;const pages=PAGES.filter(p=>can(p[0],'view')&&p[0]!=='messages');if(!tab||!pages.some(p=>p[0]===tab))tab=pages[0]?pages[0][0]:'';
   $('#nav').style.display='';$('#nav').innerHTML=pages.map(p=>`<button data-tab="${p[0]}" aria-pressed="${tab===p[0]}"><span>${p[1]}</span>${p[2]}</button>`).join('');
-  $('#m').innerHTML=tab==='invoices'?invView():tab==='stock'?stockView():tab==='customers'?custView():tab==='count'&&window.DALC?DALC.view():'<div class="note">لا صفحات مصرّح بها لك بعد. راجع المالك.</div>';}
+  $('#m').innerHTML=tab==='invoices'?invView():tab==='stock'?stockView():tab==='customers'?custView():tab==='roast'&&window.DALR?DALR.view(can('roast','edit')):tab==='count'&&window.DALC?DALC.view():'<div class="note">لا صفحات مصرّح بها لك بعد. راجع المالك.</div>';}
 document.addEventListener('click',async e=>{const t=e.target.closest('[data-tab]');if(t){tab=t.getAttribute('data-tab');render();return;}
   const ff=e.target.closest('[data-f]');if(ff){flt=ff.getAttribute('data-f');render();return;}
   const tt=e.target.closest('[data-t]');if(tt){selT=tt.getAttribute('data-t');render();return;}
@@ -107,7 +108,7 @@ document.addEventListener('click',async e=>{const t=e.target.closest('[data-tab]
 document.addEventListener('change',async e=>{if(e.target.id==='file'){upload(Array.from(e.target.files||[]));e.target.value='';return;}
   const qf=e.target.closest('[data-q]');if(qf){const id=qf.getAttribute('data-q');const v=qf.value.trim();try{await api('/staff/stock',{method:'POST',body:JSON.stringify({id,q:v})});toast('✓ حُفظت الكمية');}catch(x){toast('تعذّر الحفظ');}}});
 let qt=null;document.addEventListener('input',e=>{if(e.target.id==='q'){q=e.target.value;clearTimeout(qt);qt=setTimeout(()=>{const el=$('#q');const pos=el.selectionStart;render();const n=$('#q');if(n){n.focus();n.setSelectionRange(pos,pos);}},250);}});
-window.DALAPI=api;window.DALTOAST=toast;window.DALRENDER=()=>{const X=window.DALC;if(!X){render();return;}if(X.h)return;const sc=X.scan,ed=X.edit;X.scan=null;X.edit=null;render();X.scan=sc;X.edit=ed;};
+window.DALAPI=api;window.DALD=()=>D;window.DALTOAST=toast;window.DALRENDER=()=>{const X=window.DALC;if(!X){render();return;}if(X.h)return;const sc=X.scan,ed=X.edit;X.scan=null;X.edit=null;render();X.scan=sc;X.edit=ed;};
 render();if(ME&&TOK)load();setInterval(()=>{if(ME&&TOK&&!document.hidden)load();},90000);document.addEventListener('visibilitychange',()=>{if(!document.hidden&&ME&&TOK)load();});
 </script>
 </body>
