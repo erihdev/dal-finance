@@ -162,6 +162,10 @@ module.exports = function sallaFoodics(d) {
       catch (e) { res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<meta charset=utf-8><body style="font-family:sans-serif;direction:rtl;text-align:center;padding:40px"><h2>تعذّر ربط فودكس</h2><p>' + String(e.message || e).replace(/[<>]/g, '') + '</p></body>'); }
       return true;
     }
+    if (p === '/foodics/webhook') {   // عام: أحداث فودكس (تحديث طلب أنشأناه / تغيّر القائمة) — نقبل ونسجّل العنوان فقط
+      try { const j = JSON.parse(await readBody(req, 1e6) || '{}'); const ev = String(j.event || j.type || '').slice(0, 60); ST.hooks = (ST.hooks || []).concat([{ at: new Date().toISOString(), ev }]).slice(-20); const oid = j.data && j.data.id; if (/order/.test(ev) && oid) { for (const r of Object.values(ST.orders)) if (r.fid === oid) { r.fstatus = j.data.status; } } if (/menu/.test(ev)) CAT = null; wr('sf_state.json', ST); } catch (e) {}
+      J(200, { ok: true }); return true;
+    }
     if (!p.startsWith('/foodics/')) return false;
     if (!authed) { J(401, { ok: false, err: 'auth' }); return true; }
     if (p === '/foodics/connect') {   // يبدأ التفويض: تحويل المالك لصفحة فودكس
