@@ -64,7 +64,46 @@
   const describe = lad => (lad || []).map(x => x[0] + (x[1] == null ? '=?' : x[1] === 1 ? '' : '=' + x[1])).join(' > ');
   // الرصيد المحسوب لصنف من الدفعات: مجموع الباقي في دفعاته (null = لا دفعات بعد، فلا رقم ولا تنبيه)
   function balance(list, sku) { let has = false, s = 0; for (const x of list || []) if (x.t === 'in' && x.s === sku) { has = true; s += +x.rem || 0; } return has ? Math.round(s * 10000) / 10000 : null; }
-  // ما وصل للحد الأدنى: [{s, bal, min, kind}] — kind: roast (محمّص → حمّص) أو order (أخضر وغيره → اطلب)
+  // ما وصل للحد الأدنى: [{s, bal, min, kind}] — kind: roast (محمّص → حمّص) أو order (أخضر وغيره → اطلب). الرصيد = المستودع + المحمصة (مجموع الدفعات)
   function alerts(items, units, list) { const out = []; for (const it of items || []) { const e = units && units[it.s]; if (!e || e.min == null) continue; const bal = balance(list, it.s); if (bal == null || bal > e.min) continue; out.push({ s: it.s, bal, min: e.min, base: e.base, kind: it.c === 'Roasted Coffee' ? 'roast' : 'order' }); } return out; }
-  return { KEYS, NAME, FOOD, ROAST_MAP, ROASTED_MIN, name, baseOf, defaults, factor, usable, total, validate, merge, describe, balance, alerts };
+  /* ---------- المواقع: المستودع wh / المحمصة rs / المقهى cafe ----------
+     كل سجل حركة يحمل from و/أو to. الدفعات (in مع rem) عامة على المحمصة كلها؛ رصيد المستودع والمحمصة يُحسب من تدفّق الحركات،
+     والمقهى مصبّ (فودكس يخصم استهلاكه من المبيعات) فيُعرض «أُرسل للمقهى منذ آخر جرد» فقط.
+     النقل بين المستودع والمحمصة سجل t:'trf' لا يمسّ الدفعات؛ النقل إلى المقهى سجل t:'out' يستهلك الدفعات بالأقدم (كما كان «للبار»).
+     السجلات القديمة بلا مواقع تُطبَّع هنا دون إعادة كتابة المخزن: إضافة من مورد → المستودع، سحب قديم «للبار» أو تسليم قديم → من موقع الدفعة التي سُحب منها (دفعة مورد: المستودع، دفعة تحميص: المحمصة) وإلى المقهى للسحب،
+     سحب أخضر للتحميص → من المحمصة، محمّص من التحميص → إلى المحمصة، فرق الجرد → موقع الدفعة التي طُبّق عليها (وإلا المستودع). */
+  const LOCS = ['wh', 'rs', 'cafe'];
+  const LOC_NAME = { wh: ['المستودع', 'Warehouse'], rs: ['المحمصة', 'Roastery'], cafe: ['المقهى', 'Cafe'] };
+  const ROUTES = [['wh', 'cafe'], ['wh', 'rs'], ['rs', 'cafe'], ['rs', 'wh']];   // أنواع الصرف الأربعة التي طلبها المالك، لا غيرها
+  const locName = (k, en) => (LOC_NAME[k] || [k || '', k || ''])[en ? 1 : 0];
+  const isLoc = k => LOCS.includes(k);
+  const routeOk = (f, t) => ROUTES.some(r => r[0] === f && r[1] === t);
+  const isRoast = x => !!(x && (x.batch || (x.sup && x.sup.id === 'roast')));
+  const lotLoc = (x, list) => { const a = (x.alloc || [])[0]; const lot = a && (list || []).find(y => y.id === a.lot); return lot ? locs(lot).to : 'wh'; };   // موقع الدفعة التي سُحب منها: دفعة مورد → المستودع، دفعة تحميص → المحمصة
+  function locs(x, list) {
+    if (!x) return {};
+    if (x.t === 'in') return { to: isLoc(x.to) ? x.to : (isRoast(x) ? 'rs' : 'wh') };
+    if (x.t === 'out') { const from = isLoc(x.from) ? x.from : x.batch ? 'rs' : lotLoc(x, list); if (x.cust || x.batch) return { from }; return { from, to: isLoc(x.to) ? x.to : 'cafe' }; }
+    if (x.t === 'trf') return { from: isLoc(x.from) ? x.from : 'wh', to: isLoc(x.to) ? x.to : 'rs' };
+    if (x.t === 'adj') return { to: isLoc(x.loc) ? x.loc : lotLoc(x, list) };
+    return {};
+  }
+  // نقل داخلي: سجل trf (مستودع ↔ محمصة) أو سحب إلى المقهى (بلا عميل وبلا دفعة تحميص)
+  const isTrf = x => !!x && (x.t === 'trf' || (x.t === 'out' && !x.cust && !x.batch));
+  const eff = x => Math.max(0, (+x.tot || 0) - (+x.un || 0));   // ما نقص فعلًا من الدفعات («بلا دفعة» لا ينقص الرصيد)
+  const r4 = v => Math.round(v * 10000) / 10000;
+  // أرصدة صنف بالمواقع: {wh, rs, cafe, total} — total مجموع الدفعات (null بلا دفعات)؛ cafe = ما أُرسل للمقهى بعد since (ISO) أو منذ البداية
+  function balances(list, sku, since) {
+    const r = { wh: 0, rs: 0, cafe: 0, total: balance(list, sku) };
+    for (const x of list || []) { if (x.s !== sku) continue; const l = locs(x, list);
+      if (x.t === 'in') r[l.to] += +x.tot || 0;
+      else if (x.t === 'out') { r[l.from] -= eff(x); if (l.to === 'cafe' && (!since || String(x.at) > since)) r.cafe += +x.tot || 0; }
+      else if (x.t === 'trf') { r[l.from] -= +x.tot || 0; r[l.to] += +x.tot || 0; }
+      else if (x.t === 'adj') { const n = (x.alloc || []).length ? (x.alloc || []).reduce((a, y) => a + (+y.n || 0), 0) : +x.n || 0; r[l.to] += n; } }
+    r.wh = r4(r.wh); r.rs = r4(r.rs); r.cafe = r4(r.cafe); return r;
+  }
+  const balanceAt = (list, sku, loc) => balances(list, sku)[loc];
+  // وقت آخر جرد من live/count_state: الجرد الجاري إن كان فيه أسطر، وإلا آخر جرد مُغلق؛ null = لا جرد بعد
+  function lastCountAt(cs) { if (!cs) return null; const c = cs.cur; if (c && c.lines && Object.keys(c.lines).length) return c.started || null; const h = (cs.hist || [])[0]; return h ? (h.closed || h.started || null) : null; }
+  return { KEYS, NAME, FOOD, ROAST_MAP, ROASTED_MIN, name, baseOf, defaults, factor, usable, total, validate, merge, describe, balance, alerts, LOCS, LOC_NAME, ROUTES, locName, isLoc, routeOk, locs, isTrf, balances, balanceAt, lastCountAt };
 });

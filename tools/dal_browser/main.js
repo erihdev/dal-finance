@@ -474,20 +474,30 @@ function moveApply(doc, j, who, unitsDoc, now, ctx) {
   const num = v => (v === '' || v == null || !isFinite(+v)) ? null : r4(+v);
   const mkId = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   if (j.op === 'add') {
-    const t = j.t === 'in' ? 'in' : j.t === 'out' ? 'out' : null; if (!t) throw new Error('type');
+    const t = j.t === 'in' ? 'in' : j.t === 'out' ? 'out' : j.t === 'trf' ? 'trf' : null; if (!t) throw new Error('type');
     const sku = String(j.s || '').slice(0, 40); const it = itemOf(sku, pend); if (!it) throw new Error('sku');
     const entry = DALU.merge([it], unitsDoc)[sku];
     const lines = (Array.isArray(j.lines) ? j.lines : []).slice(0, 20).map(l => ({ n: num(l && l.n), u: String((l && l.u) || '').slice(0, 12) }));
     if (!lines.length || lines.some(l => !(l.n > 0) || !DALU.usable(entry, l.u))) throw new Error('lines');
     const tot = DALU.total(entry, lines); if (!(tot > 0)) throw new Error('total');
-    const rec = { id: mkId('M'), at: now, by: who, t, s: sku, lines, tot, base: entry.base };
+    // المواقع: إضافة إلى المستودع (افتراضي) أو المحمصة؛ نقل بأحد المسارات الأربعة فقط؛ تسليم من المستودع (افتراضي) أو المحمصة. غير ذلك → route
+    const locIn = v => v == null || v === '' ? null : String(v).slice(0, 8);
+    let from = locIn(j.from), to = locIn(j.to);
+    if (t === 'in') { to = to || 'wh'; from = null; if (!DALU.isLoc(to) || to === 'cafe') throw new Error('route'); }
+    else if (t === 'trf') { if (!from || !to || !DALU.routeOk(from, to)) throw new Error('route'); }
+    else { from = from || (j.batch && ctx.sys ? 'rs' : 'wh'); if (!DALU.isLoc(from) || from === 'cafe') throw new Error('route'); to = j.dest === 'cust' || (ctx.sys && j.batch) ? null : (to || 'cafe'); if (to && to !== 'cafe') throw new Error('route'); }
+    const rec = { id: mkId('M'), at: now, by: who, t: t === 'trf' && to === 'cafe' ? 'out' : t, s: sku, lines, tot, base: entry.base };   // النقل إلى المقهى سحب يستهلك الدفعات (كما كان «للبار»)
+    if (from) rec.from = from; if (to) rec.to = to;
     const note = String(j.note || '').trim().slice(0, 120); if (note) rec.note = note;
     const batch = ctx.sys && j.batch ? String(j.batch).slice(0, 40) : '';   // وسم الدفعة من مسار التحميص فقط، لا من طلب العميل
+    if (t === 'trf') { rec.trf = 1; const avail = DALU.balances(st.list, sku)[from]; if (avail < tot) rec.short = r4(tot - avail); }   // trf: طُلب كنقل؛ short: رصيد الموقع المصدر لا يغطيه (يُسجَّل ويُعلَّم، لا يُرفض)
     if (t === 'in') {
       const sp = supOf(j, ctx.sups, pend, who, now, ctx.sys); if (!sp) throw new Error('sup');
       rec.sup = sp.sup; rec.rem = tot; if (sp.newSup) out.newSup = sp.newSup;
       const inv = String(j.inv || '').trim().slice(0, 40); if (inv) { rec.inv = inv; const ix = (((ctx.invs || {}).items) || []).find(x => x.id === inv); if (ix && ix.invoice_no) rec.invNo = String(ix.invoice_no).slice(0, 40); }   // رقم الفاتورة كما طُبع عليها (للعرض والسندات)؛ inv يبقى مفتاح الفهرس
       if (batch) rec.batch = batch;
+    } else if (rec.t === 'trf') {
+      if (batch) rec.batch = batch;   // نقل تلقائي للتحميص: يحمل رقم الدفعة فيُلغى معها
     } else {
       if (batch) rec.batch = batch;
       if (j.dest === 'cust') { const cu = custOf(j, ctx.custs, pend, who, now); if (!cu) throw new Error('cust'); rec.cust = cu.cust; if (cu.newCust) out.newCust = cu.newCust; }   // تسليم لعميل: سحب يحمل العميل ويُنتج سند تسليم
@@ -501,7 +511,7 @@ function moveApply(doc, j, who, unitsDoc, now, ctx) {
     st.list.unshift(rec); out.events.forEach(ev => st.list.unshift(ev)); st.list = st.list.slice(0, MOVES_CAP); st.at = now; out.rec = rec; return out;
   }
   if (j.op === 'del') {
-    const rec = st.list.find(x => x.id === j.id); if (!rec || !/^(in|out)$/.test(rec.t)) throw new Error('nf');
+    const rec = st.list.find(x => x.id === j.id); if (!rec || !/^(in|out|trf)$/.test(rec.t)) throw new Error('nf');
     if (!ctx.sys && rec.by !== who) throw new Error('owner'); if (rec.t === 'in' && r4(rec.rem) !== r4(rec.tot)) throw new Error('used');   // دفعة بدأ السحب منها لا تُلغى
     if (rec.doc && DOCS.isSigned(ctx.docs, rec.doc)) throw new Error('signed');   // مستند موقّع: محتواه مقفول، لا تراجع ولا تعديل لأسطره
     if (!ctx.sys && new Date(now) - new Date(rec.at) > MOVE_UNDO_MS) throw new Error('late');   // sys: تراجع دفعة تحميص (قاعدة اليوم نفسه في مسار التحميص)
@@ -511,11 +521,15 @@ function moveApply(doc, j, who, unitsDoc, now, ctx) {
   throw new Error('op');
 }
 // دفعة تحميص دال تحرّك المخزون: سحب الأخضر (من الدفعة المختارة ثم الأقدم) وإضافة المحمّص كدفعة موردها «تحميص دال». عملية واحدة؛ دفعات العملاء الخارجيين لا تمر هنا أبدًا
+// الأخضر يُستهلك في المحمصة والمحمّص يُنتج فيها. إن كان رصيد المحمصة من الأخضر أقل من الدفعة يُسجَّل نقل تلقائي من المستودع للنقص قبل الدفعة
+// (حتى لا يصير رصيد المحمصة سالبًا بصمت)؛ وإن لم يكفِ المستودع والمحمصة معًا تُسجَّل الدفعة كما كان ويُعلَّم النقص short
 function roastMoves(movesDoc, batch, who, unitsDoc, now, lot) {
   const gs = batch.gs; const rs = DALU.ROAST_MAP[gs]; if (!rs) throw new Error('green');
-  const o1 = moveApply(movesDoc, { op: 'add', t: 'out', s: gs, lines: [{ n: batch.g, u: 'kg' }], lot, batch: batch.id, note: 'تحميص ' + batch.id }, who, unitsDoc, now, { sys: true });
-  const o2 = moveApply(o1.st, { op: 'add', t: 'in', s: rs, lines: [{ n: batch.r, u: 'kg' }], sup: { id: ROAST_SUP.id }, batch: batch.id, note: 'تحميص ' + batch.id }, who, unitsDoc, now, { sys: true });
-  return { st: o2.st, out: o1.rec, inn: o2.rec, events: (o1.events || []).concat(o2.events || []), nolot: o1.rec.flag === 'nolot' };
+  let st = movesDoc, trf = null, short = 0; const b = DALU.balances((movesDoc && movesDoc.list) || [], gs); const need = r4(batch.g - Math.max(0, b.rs));
+  if (need > 0) { const amt = r4(Math.min(need, Math.max(0, b.wh))); if (amt > 0) { const o0 = moveApply(st, { op: 'add', t: 'trf', s: gs, lines: [{ n: amt, u: 'kg' }], from: 'wh', to: 'rs', batch: batch.id, note: 'نقل تلقائي للتحميص ' + batch.id }, who, unitsDoc, now, { sys: true }); st = o0.st; trf = o0.rec; } if (need > amt) short = r4(need - amt); }
+  const o1 = moveApply(st, { op: 'add', t: 'out', s: gs, lines: [{ n: batch.g, u: 'kg' }], lot, batch: batch.id, from: 'rs', note: 'تحميص ' + batch.id }, who, unitsDoc, now, { sys: true });
+  const o2 = moveApply(o1.st, { op: 'add', t: 'in', s: rs, lines: [{ n: batch.r, u: 'kg' }], sup: { id: ROAST_SUP.id }, batch: batch.id, to: 'rs', note: 'تحميص ' + batch.id }, who, unitsDoc, now, { sys: true });
+  return { st: o2.st, out: o1.rec, inn: o2.rec, trf, short, events: (o1.events || []).concat(o2.events || []), nolot: o1.rec.flag === 'nolot' };
 }
 function roastUndo(movesDoc, batch, who, now) { let st = movesDoc; for (const id of (batch.mv || [])) { try { st = moveApply(st, { op: 'del', id }, who, { items: {} }, now, { sys: true }).st; } catch (e) { if (e.message !== 'nf') throw e; } } return st; }
 // تنبيهات الحد الأدنى: تُحسب بعد كل تغيير في الدفعات؛ إشعار واحد للصنف في اليوم عبر مسار الإشعارات الموجود (الناقل)
@@ -595,7 +609,7 @@ async function docPdf(j, who) {
     if (j.no) { item = DOCS.docsFind(docs, X.legacy, String(j.no)); if (!item) throw new Error('nf'); reprint = true; }
     else { const kind = String(j.kind || ''); if (!DOCS.KINDS[kind]) throw new Error('kind'); const params = DOCS.pickParams(kind, j.params); DOCS.build(kind, params, D, lang);   // حقول معروفة فقط تُحفظ في الفهرس (لا نص حر طويل)؛ البناء أولًا حتى لا يُستهلك رقم لمستند لا يُبنى
       const mv = params.move && (moves.list || []).find(x => x.id === params.move); if (mv && mv.doc) { item = DOCS.docsFind(docs, X.legacy, mv.doc); reprint = !!item; }
-      if (!item) { const ref = kind === 'mov' ? { from: params.from, to: params.to, item: params.item, sup: params.sup, cust: params.cust } : mv ? (mv.sup ? { sup: mv.sup.id, name: mv.sup.name, item: mv.s } : mv.cust ? { cust: mv.cust.id, name: mv.cust.name, item: mv.s } : { item: mv.s }) : { inv: params.inv };
+      if (!item) { const ref = kind === 'mov' ? { from: params.from, to: params.to, item: params.item, sup: params.sup, cust: params.cust, loc: params.loc } : mv ? (mv.sup ? { sup: mv.sup.id, name: mv.sup.name, item: mv.s } : mv.cust ? { cust: mv.cust.id, name: mv.cust.name, item: mv.s } : kind === 'trf' ? Object.assign({ item: mv.s }, DALU.locs(mv, moves.list)) : { item: mv.s }) : { inv: params.inv };
         const da = DOCS.docAdd(docs, kind, params, who, now, ref); docs = da.st; item = da.item; if (mv) { mv.doc = item.no; moves.at = now; await gas({ op: 'set', path: 'live/moves', data: moves }); } await gas({ op: 'set', path: X.path, data: docs }); } }
     let sigs = item.sigs || []; if (sigs.length) { const rs = await gas({ op: 'get', paths: [DOCS.sigsPath(DOCS.yearOfNo(item.no) || year)] }); const sd = rs.docs && rs.docs[DOCS.sigsPath(DOCS.yearOfNo(item.no) || year)]; sigs = DOCS.sigMerge(item, (sd && sd.data) || null).sigs; }
     const doc = DOCS.docData(item, D, lang);   // مستند موقّع: من النسخة المجمّدة عند التوقيع؛ وإلا من البيانات الحية
@@ -665,28 +679,29 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       const r = await gas({ op: 'get', paths: ['live/units'] }); const d = r.docs && r.docs['live/units']; const doc = (d && d.data) || { items: {}, log: [] }; const now = new Date().toISOString();
       const st = unitsApply(doc, j, me.name, now); if (st !== doc) { await gas({ op: 'set', path: 'live/units', data: st }); await staffLog(me.name, 'units', j.sku + ' ' + DALU.describe(st.items[j.sku].lad) + (st.items[j.sku].min != null ? ' min=' + st.items[j.sku].min : '')); if (j.min !== undefined) { const rm = await gas({ op: 'get', paths: ['live/moves'] }); const dm = rm.docs && rm.docs['live/moves']; await alertsRefresh(st, (dm && dm.data) || { list: [] }, now); } }
       return json(200, { ok: true, keys: DALU.KEYS, items: DALU.merge(CITEMS, st), log: (st.log || []).slice(0, 50), at: st.at || null, canEdit: true }); }); } catch (e) { return json(400, { ok: false, err: String(e.message || e) }); } }
-  if (path === '/staff/move' && req.method === 'POST') { if (!can('move', 'edit')) return json(403, { ok: false, err: 'forbidden' });   // حركة مخزون: {op:'add', t:'out'|'in', s, lines:[{n,u}], sup:{id}|{new:1,name}, inv, lot, note} أو {op:'del', id}
+  if (path === '/staff/move' && req.method === 'POST') { if (!can('move', 'edit')) return json(403, { ok: false, err: 'forbidden' });   // حركة مخزون: {op:'add', t:'in', to:'wh'|'rs', s, lines:[{n,u}], sup:{id}|{new:1,name}, inv} | {t:'trf', from, to (أحد المسارات الأربعة), lot} | {t:'out', dest:'cust', cust, from:'wh'|'rs', lot} أو {op:'del', id}. مسار غير مسموح → 400 route
     try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); return await countQueue(async () => {
       const DP = DOCS.docsPath(CY()), DP1 = DOCS.docsPath(String(+CY() - 1)); const r = await gas({ op: 'get', paths: ['live/moves', 'live/units', 'live/suppliers', 'live/pending_items', 'live/customers', 'live/docs_out', 'live/invoices', DP, DP1] }); const g = n => { const d = r.docs && r.docs['live/' + n]; return (d && d.data) || null; }; const now = new Date().toISOString();
       const pend = g('pending_items') || { items: [], suppliers: [] }; const dy = r.docs && r.docs[DP]; const docsY = dy && dy.data ? dy.data : DOCS.docsSeed(g('docs_out'), CY()); const dy1 = r.docs && r.docs[DP1];
       const o = moveApply(g('moves') || { list: [] }, j, me.name, g('units') || { items: {} }, now, { sups: g('suppliers'), pend, custs: g('customers'), invs: g('invoices'), docs: { items: DOCS.docsMerge({ items: DOCS.docsMerge(docsY, dy1 && dy1.data) }, g('docs_out')) } });   // قفل المستند الموقّع: فهرس هذه السنة والماضية (رأس السنة) + القديم
-      // سند مرقّم تلقائيًا: استلام لكل دفعة من مورد حقيقي، وتسليم لكل سحب لعميل. يُطبع الآن أو لاحقًا بالرقم نفسه
+      // سند مرقّم تلقائيًا: استلام لكل دفعة من مورد حقيقي، تسليم لكل سحب لعميل، ونقل داخلي لكل نقل بين المواقع. يُطبع الآن أو لاحقًا بالرقم نفسه
       const rec = o.rec; let docItem = null, docsOut = null;
-      if (j.op === 'add' && ((rec.t === 'in' && rec.sup && rec.sup.id !== INTERNAL_SUP.id && rec.sup.id !== ROAST_SUP.id) || (rec.t === 'out' && rec.cust))) {
-        const kind = rec.t === 'in' ? 'rec' : 'dlv'; const da = DOCS.docAdd(docsY, kind, { move: rec.id }, me.name, now, kind === 'rec' ? { sup: rec.sup.id, name: rec.sup.name, item: rec.s } : { cust: rec.cust.id, name: rec.cust.name, item: rec.s });
+      if (j.op === 'add' && ((rec.t === 'in' && rec.sup && rec.sup.id !== INTERNAL_SUP.id && rec.sup.id !== ROAST_SUP.id) || (rec.t === 'out' && rec.cust) || rec.trf)) {
+        const kind = rec.t === 'in' ? 'rec' : rec.trf ? 'trf' : 'dlv'; const da = DOCS.docAdd(docsY, kind, { move: rec.id }, me.name, now, kind === 'rec' ? { sup: rec.sup.id, name: rec.sup.name, item: rec.s } : kind === 'trf' ? { from: rec.from, to: rec.to, item: rec.s } : { cust: rec.cust.id, name: rec.cust.name, item: rec.s });
         rec.doc = da.item.no; docItem = da.item; docsOut = da.st; }
       // الفهرس قبل الحركات: إن فشل حفظ الفهرس لا تُحفظ حركة تحمل رقمًا غير مسجّل (وإلا تكرر الرقم في السند التالي). مخزن GAS ليس ذريًا بين المستندين؛ الطابور هنا يسلسل الكتابة داخل هذه الخدمة فقط
       if (docsOut) await gas({ op: 'set', path: DP, data: docsOut });
       await gas({ op: 'set', path: 'live/moves', data: o.st }); const alerts = await alertsRefresh(g('units'), o.st, now);
       if (o.newSup || o.newCust) { if (o.newSup) pend.suppliers = [o.newSup].concat(pend.suppliers || []).slice(0, 100); if (o.newCust) pend.customers = [o.newCust].concat(pend.customers || []).slice(0, 200); pend.at = now; await gas({ op: 'set', path: 'live/pending_items', data: pend }); }
-      await staffLog(me.name, 'move', (j.op === 'del' ? 'تراجع ' : rec.t === 'out' ? (rec.cust ? 'تسليم ' : 'سحب ') : 'إضافة ') + rec.s + ' ' + rec.tot + ' ' + rec.base + (rec.sup ? ' من ' + rec.sup.name : '') + (rec.cust ? ' إلى ' + rec.cust.name : '') + (rec.inv ? ' فاتورة ' + (rec.invNo || rec.inv) : '') + (rec.doc ? ' ' + rec.doc : ''));
+      const L = DALU.locs(rec, o.st.list); const ln = k => DALU.locName(k, false);
+      await staffLog(me.name, 'move', (j.op === 'del' ? 'تراجع ' : rec.t === 'in' ? 'إضافة ' : rec.cust ? 'تسليم ' : DALU.isTrf(rec) ? 'نقل ' : 'سحب ') + rec.s + ' ' + rec.tot + ' ' + rec.base + (rec.sup ? ' من ' + rec.sup.name : '') + (rec.cust ? ' إلى ' + rec.cust.name : '') + (j.op !== 'del' && (L.from || L.to) ? ' ' + [L.from ? ln(L.from) : '', L.to ? ln(L.to) : ''].filter(Boolean).join(' ← ') : '') + (rec.short ? ' (نقص ' + rec.short + ')' : '') + (rec.inv ? ' فاتورة ' + (rec.invNo || rec.inv) : '') + (rec.doc ? ' ' + rec.doc : ''));
       return json(200, { ok: true, moves: o.st, rec, events: o.events || [], pending: pend, alerts, doc: docItem, docs_out: docsOut ? { items: DOCS.docsMerge(docsOut, g('docs_out')).map(x => DOCS.sigStrip(x, null)) } : undefined }); }); } catch (e) { return json(e.message === 'signed' ? 409 : 400, { ok: false, err: String(e.message || e) }); } }
   if (path === '/staff/sign' && req.method === 'POST') {   // توقيع إلكتروني {no, role, name, png}: صلاحية الحركة (تعديل) لسندات الاستلام/التسليم؛ «اعتماد» للمالك فقط (403 هنا دائمًا)
     if (!can('move', 'edit')) return json(403, { ok: false, err: 'forbidden' });
     try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); if (!j.no) return json(400, { ok: false, err: 'no' }); const o = await docSign(j, me.name, me.id, req.headers['user-agent'], false);
       return json(200, { ok: true, doc: DOCS.sigStrip(o.item, me.id), sig: { role: o.sig.role, name: o.sig.name, at: o.sig.at, hash: o.sig.hash } }); }
     catch (e) { return json(e.message === 'too-big' ? 413 : SIGN_CODE[e.message] || 500, { ok: false, err: String(e.message || e) }); } }
-  if (path === '/staff/doc' && req.method === 'POST') {   // مستند PDF: {kind:'mov'|'rec'|'dlv', params, lang} يُرقَّم ويُفهرس، أو {no} لإعادة طباعة مستند بالرقم نفسه
+  if (path === '/staff/doc' && req.method === 'POST') {   // مستند PDF: {kind:'mov'|'rec'|'dlv'|'trf', params, lang} يُرقَّم ويُفهرس، أو {no} لإعادة طباعة مستند بالرقم نفسه
     if (!(can('move', 'view') || can('roast', 'view'))) return json(403, { ok: false, err: 'forbidden' });
     try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); const out = await docPdf(j, me.name); res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="' + out.no + '.pdf"', 'X-Dal-Doc': out.no }); res.end(out.pdf); return true; }
     catch (e) { return json(e.message === 'nf' || e.message === 'kind' || e.message === 'params' ? 400 : 500, { ok: false, err: String(e.message || e) }); } }
@@ -725,8 +740,8 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       if (j.op === 'add') { const t = X ? 'ext' : 'dal'; const g = n(j.g), rr = n(j.r); if (!(g > 0) || !(rr > 0) || rr > g || g > 200) throw new Error('weight');
         let gi = null; if (t === 'dal') { gi = citem(String(j.gs || '')); if (!gi || !DALU.ROAST_MAP[gi.s]) throw new Error('origin'); } if (t === 'ext' && !String(j.c || '').trim()) throw new Error('customer');
         const it = { id: 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t, gs: t === 'dal' ? gi.s : undefined, rs: t === 'dal' ? DALU.ROAST_MAP[gi.s] : undefined, o: t === 'dal' ? String(j.o || gi.s).slice(0, 60) : undefined, on: t === 'dal' ? gi.ar : undefined, c: t === 'ext' ? String(j.c).slice(0, 80) : undefined, g, r: rr, n: String(j.n || '').slice(0, 120) || undefined, by: me.name, at: now };
-        if (t === 'dal') { const rm = roastMoves(moves, it, me.name, units, now, j.lot ? String(j.lot) : ''); moves = rm.st; it.mv = [rm.out.id, rm.inn.id]; if (rm.nolot) it.nolot = 1; mvChanged = true; extra = { out: rm.out, inn: rm.inn, events: rm.events, nolot: rm.nolot }; }
-        lg.list = [it].concat(lg.list || []).slice(0, 3000); await staffLog(me.name, 'roast', (t === 'ext' ? 'خارجي ' + it.c : it.on || it.o) + ' ' + g + '→' + rr + (it.nolot ? ' (بلا دفعة أخضر)' : '')); }
+        if (t === 'dal') { const rm = roastMoves(moves, it, me.name, units, now, j.lot ? String(j.lot) : ''); moves = rm.st; it.mv = (rm.trf ? [rm.trf.id] : []).concat([rm.out.id, rm.inn.id]); if (rm.nolot) it.nolot = 1; if (rm.short) it.short = rm.short; mvChanged = true; extra = { out: rm.out, inn: rm.inn, trf: rm.trf, short: rm.short || 0, events: rm.events, nolot: rm.nolot }; }
+        lg.list = [it].concat(lg.list || []).slice(0, 3000); await staffLog(me.name, 'roast', (t === 'ext' ? 'خارجي ' + it.c : it.on || it.o) + ' ' + g + '→' + rr + (extra.trf ? ' (نقل تلقائي ' + extra.trf.tot + ' من المستودع)' : '') + (it.short ? ' (نقص ' + it.short + ')' : '') + (it.nolot ? ' (بلا دفعة أخضر)' : '')); }
       else if (j.op === 'del') { const it = (lg.list || []).find(x => x.id === j.id); if (!it) throw new Error('nf'); const dd = x => new Date(new Date(x).getTime() + 3 * 3600e3).toISOString().slice(0, 10); if (dd(it.at) !== dd(now)) return json(403, { ok: false, err: 'الحذف لدفعات اليوم فقط' });
         if (!X && it.mv && it.mv.length) { moves = roastUndo(moves, it, me.name, now); mvChanged = true; }
         lg.list = lg.list.filter(x => x.id !== j.id); await staffLog(me.name, 'roast', 'حذف دفعة ' + (it.on || it.c || '') + ' ' + it.g + '→' + it.r); }

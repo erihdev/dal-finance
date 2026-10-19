@@ -1,5 +1,6 @@
-/* سجل التحميص (v4) — كل دفعة: المحصول (رمز الأخضر في فودكس)، وزن الأخضر، وزن المحمّص، والفاقد يتحسب لحاله.
-   دفعة دال تحرّك المخزون على الخادم: سحب من دفعة الأخضر (الأقدم أو المختارة) وإضافة للمحمّص المقابل (الربط في units-core ROAST_MAP).
+/* سجل التحميص (v5) — كل دفعة: المحصول (رمز الأخضر في فودكس)، وزن الأخضر، وزن المحمّص، والفاقد يتحسب لحاله.
+   دفعة دال تحرّك المخزون على الخادم: الأخضر يُستهلك في المحمصة (من دفعة الأخضر الأقدم أو المختارة) والمحمّص يُنتج فيها (الربط في units-core ROAST_MAP).
+   إن كان رصيد المحمصة من الأخضر أقل من الدفعة يسجّل الخادم نقلًا تلقائيًا من المستودع للنقص قبل الدفعة.
    الوقت والاسم يتسجلان تلقائياً. دفعات العملاء الخارجيين بنوع منفصل ولا تُحسب في بن دال.
    الحفظ في live/roast_log (دال) و live/roast_ext (الخارجيين) عبر /staff/roast. */
 (function () {
@@ -63,9 +64,9 @@
   };
 
   // دفعات الأخضر المفتوحة للمحصول المختار: إن كانت أكثر من واحدة يختار الموظف (الأقدم أولًا)؛ وإن لم توجد دفعات بعد فالرصيد «—» ويُعلَّم للمالك
-  function lotChips() { if (!R.o) return ''; const L = lotsOf(R.o); const bal = U() ? U().balance(((window.DALD().moves || {}).list) || [], R.o) : null;
+  function lotChips() { if (!R.o) return ''; const L = lotsOf(R.o); const B = U() ? U().balances(((window.DALD().moves || {}).list) || [], R.o) : { total: null, wh: 0, rs: 0 }; const bal = B.total; const LN = k => U().locName(k, EN());
     const sup = s => s && s.id === 'dal' && EN() ? 'Dal (in-house)' : (s && s.name) || '';
-    const head = `<label>${T('رصيد الأخضر حسب الدفعات', 'Green balance from lots')}: <b style="color:var(--ink)">${bal == null ? '—' : f1(bal) + ' ' + T('كجم', 'kg')}</b>${bal == null ? ' · ' + T('لا دفعات بعد (يُسجَّل ويُعلَّم للمالك)', 'no lots yet (logged and flagged for the owner)') : ''}</label>`;
+    const head = `<label>${T('رصيد الأخضر', 'Green balance')}: ${LN('rs')} <b style="color:var(--ink)">${f1(B.rs)}</b> · ${LN('wh')} <b style="color:var(--ink)">${f1(B.wh)}</b> · ${T('الإجمالي', 'Total')} <b style="color:var(--ink)">${bal == null ? '—' : f1(bal) + ' ' + T('كجم', 'kg')}</b>${bal == null ? ' · ' + T('لا دفعات بعد (يُسجَّل ويُعلَّم للمالك)', 'no lots yet (logged and flagged for the owner)') : ''}</label><small style="display:block;color:var(--ink2);font-size:12px;margin-top:2px">${T('الأخضر يُستهلك في المحمصة؛ ما ينقص فيها يُنقل تلقائيًا من المستودع مع الدفعة.', 'Green is consumed at the roastery; any shortfall there is transferred automatically from the warehouse with the batch.')}</small>`;
     if (L.length < 2) return head;
     return head + `<div class="chips" style="padding-top:6px">${L.map((l, k) => `<button data-rlot="${esc(l.id)}" aria-pressed="${(R.lot || L[0].id) === l.id}"><bdi class="d">${esc(sup(l.sup))}</bdi> · <bdi>${dName(day(l.at))}</bdi> · ${T('باقي', 'left')} ${f1(l.rem)}</button>`).join('')}</div>`; }
   function upd() { const p = loss(num(R.g), num(R.r)); const el = document.getElementById('rl-ls'); if (!el) return; el.classList.toggle('w', odd(p)); el.innerHTML = `<small>${lossLbl(p)}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b>`; }
@@ -88,7 +89,7 @@
       const lots = R.t === 'dal' ? lotsOf(R.o) : []; const res = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'add', t: R.t, gs: R.t === 'dal' ? R.o : undefined, lot: lots.length > 1 ? (R.lot || lots[0].id) : undefined, o: R.o, on: o ? o.name : '', c: R.c.trim(), g, r, n: R.n.trim() }) });
       if (!res.ok) throw new Error(svErr(res.err));
       window.DALD()[DOC(R.t)] = res.log; if (res.moves) window.DALD().moves = res.moves; if (res.alerts) window.DALD().alerts_stock = res.alerts; Object.assign(R, { g: '', r: '', n: '', c: '', lot: null });
-      window.DALTOAST(res.out ? T('انسجّلت الدفعة: سُحب ', 'Batch logged: issued ') + f1(res.out.tot) + T(' كجم أخضر وأُضيف ', ' kg green, added ') + f1(res.inn.tot) + T(' كجم محمّص', ' kg roasted') + (res.nolot ? T(' · بلا دفعة أخضر (للمالك)', ' · no green lot (flagged)') : '') : T('انسجّلت الدفعة', 'Batch logged'));
+      window.DALTOAST(res.out ? T('انسجّلت الدفعة: سُحب ', 'Batch logged: issued ') + f1(res.out.tot) + T(' كجم أخضر وأُضيف ', ' kg green, added ') + f1(res.inn.tot) + T(' كجم محمّص', ' kg roasted') + (res.trf ? T(' · نُقل ', ' · transferred ') + f1(res.trf.tot) + T(' كجم من المستودع للمحمصة تلقائيًا', ' kg from the warehouse to the roastery automatically') : '') + (res.short ? T(' · نقص ', ' · short ') + f1(res.short) + T(' كجم في المستودع والمحمصة معًا (للمالك)', ' kg across warehouse and roastery (flagged)') : '') + (res.nolot ? T(' · بلا دفعة أخضر (للمالك)', ' · no green lot (flagged)') : '') : T('انسجّلت الدفعة', 'Batch logged'));
     } catch (x) { window.DALTOAST(T('تعذّر الحفظ — ', 'Could not save — ') + x.message); }
     R.busy = false; window.DALRENDER();
   });

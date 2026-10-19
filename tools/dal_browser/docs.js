@@ -1,5 +1,5 @@
-/* مستندات دال المطبوعة (PDF): سجل الحركة، سند الاستلام، سند التسليم.
-   ترقيم متسلسل في live/docs_out (REC-2026-0001 / DLV-2026-0001 / MOV-2026-0001) ويُعاد طبع أي مستند من بياناته المحفوظة بالرقم نفسه.
+/* مستندات دال المطبوعة (PDF): سجل الحركة، سند الاستلام، سند التسليم، سند النقل الداخلي.
+   ترقيم متسلسل في live/docs_out (REC-2026-0001 / DLV-2026-0001 / MOV-2026-0001 / TRF-2026-0001) ويُعاد طبع أي مستند من بياناته المحفوظة بالرقم نفسه.
    التاريخ ميلادي بتوقيت الرياض مع اسم اليوم بالعربي أو الإنجليزي. الخط IBM Plex Sans Arabic مضمّن من مجلد fonts (لا اعتماد على خطوط النظام).
    لا أسعار ولا مبالغ في أي مستند: الكميات ووحداتها فقط. */
 'use strict';
@@ -22,7 +22,8 @@ const num = v => v == null || v === '' || isNaN(+v) ? '—' : Number(v).toLocale
 const AMT = /(?:\b(?:SAR|SR)\s*\d[\d,.]*|\d[\d,.]*\s*(?:SAR|SR|ريالاً|ريالات|ريال|ر\.س|هللات|هلل[ةه])(?![A-Za-zء-يٮ-ۓ])|(?:ريال|ر\.س)\s*\d[\d,.]*)/gi;   // \b لا يعمل مع العربية: حدّ الكلمة بنظرة أمامية على الحروف فقط (الفاصلة العربية ليست حرفًا)
 const scrubAmounts = s => s == null ? s : String(s).replace(AMT, '—');
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = { rec: ['REC', 'سند استلام', 'Receipt note'], dlv: ['DLV', 'سند تسليم', 'Delivery note'], mov: ['MOV', 'سجل الحركة', 'Movement log'] };
+const KINDS = { rec: ['REC', 'سند استلام', 'Receipt note'], dlv: ['DLV', 'سند تسليم', 'Delivery note'], mov: ['MOV', 'سجل الحركة', 'Movement log'], trf: ['TRF', 'سند نقل داخلي', 'Internal transfer note'] };
+const locName = (k, lang) => DALU.locName(k, lang === 'en');
 // الرقم التالي: يعدّل doc في مكانه ويرجع الرقم
 function docNext(doc, kind, at) {
   const K = KINDS[kind]; if (!K) throw new Error('kind'); const y = dayIso(at || new Date().toISOString()).slice(0, 4); const key = K[0] + '-' + y;
@@ -30,7 +31,7 @@ function docNext(doc, kind, at) {
 }
 const DOCS_CAP = 2000;
 // معاملات كل نوع مستند كما تُحفظ في الفهرس: حقول معروفة، نصوص قصيرة، لا شيء آخر من طلب العميل
-const PARAMS = { mov: ['from', 'to', 'item', 'sup', 'supName', 'cust', 'custName'], rec: ['move', 'inv'], dlv: ['move', 'moves'] };
+const PARAMS = { mov: ['from', 'to', 'item', 'sup', 'supName', 'cust', 'custName', 'loc'], rec: ['move', 'inv'], dlv: ['move', 'moves'], trf: ['move'] };
 function pickParams(kind, p) { const out = {}; p = p && typeof p === 'object' ? p : {}; for (const k of PARAMS[kind] || []) { const v = p[k]; if (v == null || v === '') continue; out[k] = k === 'moves' ? (Array.isArray(v) ? v.slice(0, 50).map(x => String(x).slice(0, 40)) : []) : String(v).slice(0, 80); } return out; }
 // يضيف مستندًا للفهرس: {no, kind, at, by, params, ref, title}
 function docAdd(doc, kind, params, who, at, ref) {
@@ -42,19 +43,29 @@ function nameOf(s, items, pend, lang) { const it = (items || []).find(i => i.s =
 const uname = (k, lang) => DALU.name(k, lang === 'en');
 const linesTxt = (rec, lang) => (rec.lines || []).map(l => num(l.n) + ' ' + uname(l.u, lang)).join(' + ');
 const supName = (s, lang) => !s ? '' : (s.id === 'dal' && lang === 'en' ? 'Dal (in-house)' : s.id === 'roast' && lang === 'en' ? 'Dal roasting' : (s.name || s.id));
-function typeOf(x, lang) { const en = lang === 'en'; if (x.t === 'in') return x.batch ? (en ? 'Roasting' : 'تحميص') : (en ? 'Add' : 'إضافة'); if (x.t === 'out') return x.cust ? (en ? 'Delivery' : 'تسليم') : x.batch ? (en ? 'Roasting' : 'تحميص') : (en ? 'Issue' : 'سحب'); if (x.t === 'done') return en ? 'Lot finished' : 'خلصت دفعة'; if (x.t === 'adj') return en ? 'Count variance' : 'فرق جرد'; return x.t; }
-// سجل الحركة: من/إلى (YYYY-MM-DD بتوقيت الرياض) + فلتر صنف/مورد/عميل اختياري
+function typeOf(x, lang) { const en = lang === 'en'; if (x.t === 'in') return x.batch ? (en ? 'Roasting' : 'تحميص') : (en ? 'Add' : 'إضافة'); if (x.t === 'trf') return x.batch ? (en ? 'Auto transfer' : 'نقل تلقائي') : (en ? 'Transfer' : 'نقل'); if (x.t === 'out') return x.cust ? (en ? 'Delivery' : 'تسليم') : x.batch ? (en ? 'Roasting' : 'تحميص') : (en ? 'Transfer' : 'نقل'); if (x.t === 'done') return en ? 'Lot finished' : 'خلصت دفعة'; if (x.t === 'adj') return en ? 'Count variance' : 'فرق جرد'; return x.t; }
+// سجل الحركة: من/إلى (YYYY-MM-DD بتوقيت الرياض) + فلتر صنف/مورد/عميل/موقع اختياري (loc: wh|rs|cafe — الحركة التي مصدرها أو وجهتها ذلك الموقع)
 function buildMov(params, D, lang) {
   const list = ((D.moves || {}).list) || []; const from = String(params.from || '').slice(0, 10), to = String(params.to || '').slice(0, 10);
   if ((from && !ISO_DAY.test(from)) || (to && !ISO_DAY.test(to)) || (from && to && from > to)) throw new Error('params');   // التاريخان YYYY-MM-DD ومن ≤ إلى
+  const loc = String(params.loc || ''); if (loc && !DALU.isLoc(loc)) throw new Error('params');
   const rows = list.filter(x => { const d = dayIso(x.at); if (from && d < from) return false; if (to && d > to) return false;
     if (params.item && x.s !== params.item) return false;
+    if (loc) { const l = DALU.locs(x, list); if (l.from !== loc && l.to !== loc) return false; }
     if (params.sup && !((x.sup && x.sup.id === params.sup) || (x.alloc || []).some(a => { const l = list.find(y => y.id === a.lot); return l && l.sup && l.sup.id === params.sup; }))) return false;
     if (params.cust && !(x.cust && (x.cust.id === params.cust || x.cust.name === params.cust))) return false; return true; }).sort((a, b) => a.at.localeCompare(b.at));
   const lotOf = id => list.find(y => y.id === id);
-  return { kind: 'mov', from, to, filter: { item: params.item ? nameOf(params.item, D.items, D.pending_items, lang) : '', sup: params.supName || '', cust: params.custName || '' }, n: rows.length,
-    rows: rows.map(x => { const f = fmtDay(x.at, lang); const who = x.t === 'out' && x.cust ? x.cust.name : x.t === 'in' ? supName(x.sup, lang) : x.t === 'done' ? supName(x.sup, lang) : (x.alloc || []).map(a => { const l = lotOf(a.lot); return l ? supName(l.sup, lang) : a.lot; }).filter((v, i, A) => A.indexOf(v) === i).join('، ');
-      return { date: f.date, day: f.day, time: f.time, type: typeOf(x, lang), t: x.t, item: nameOf(x.s, D.items, D.pending_items, lang), lines: x.t === 'adj' ? (x.n > 0 ? '+' : '−') + num(Math.abs(x.n)) + ' ' + uname(x.base, lang) : linesTxt(x, lang), tot: x.t === 'in' || x.t === 'out' ? (x.t === 'out' ? '−' : '+') + num(x.tot) + ' ' + uname(x.base, lang) : '', who, by: x.by || '', inv: x.invNo || x.inv || '', doc: x.doc || '' }; }) };
+  return { kind: 'mov', from, to, filter: { item: params.item ? nameOf(params.item, D.items, D.pending_items, lang) : '', sup: params.supName || '', cust: params.custName || '', loc: loc ? locName(loc, lang) : '' }, n: rows.length,
+    rows: rows.map(x => { const f = fmtDay(x.at, lang); const L = DALU.locs(x, list); const who = x.t === 'out' && x.cust ? x.cust.name : x.t === 'in' ? supName(x.sup, lang) : x.t === 'done' ? supName(x.sup, lang) : (x.alloc || []).map(a => { const l = lotOf(a.lot); return l ? supName(l.sup, lang) : a.lot; }).filter((v, i, A) => A.indexOf(v) === i).join('، ');
+      return { date: f.date, day: f.day, time: f.time, type: typeOf(x, lang), t: x.t, item: nameOf(x.s, D.items, D.pending_items, lang), lines: x.t === 'adj' ? (x.n > 0 ? '+' : '−') + num(Math.abs(x.n)) + ' ' + uname(x.base, lang) : linesTxt(x, lang), tot: x.t === 'in' || x.t === 'out' || x.t === 'trf' ? (x.t === 'out' ? '−' : x.t === 'trf' ? '' : '+') + num(x.tot) + ' ' + uname(x.base, lang) : '', from: L.from ? locName(L.from, lang) : '', to: L.to ? locName(L.to, lang) : (x.cust ? (lang === 'en' ? 'Customer' : 'عميل') : ''), who, by: x.by || '', inv: x.invNo || x.inv || '', doc: x.doc || '' }; }) };
+}
+// سند نقل داخلي: حركة نقل واحدة {move} — trf (مستودع ↔ محمصة) أو سحب إلى المقهى
+function buildTrf(params, D, lang) {
+  const list = ((D.moves || {}).list) || []; const m = params.move && list.find(x => x.id === params.move && DALU.isTrf(x)); if (!m) throw new Error('nf');
+  const f = fmtDay(m.at, lang); const L = DALU.locs(m, list); const lotOf = id => list.find(y => y.id === id);
+  const lots = (m.alloc || []).map(a => { const l = lotOf(a.lot); return l ? (l.batch ? (lang === 'en' ? 'roasted ' : 'تحميص ') : supName(l.sup, lang) + ' ') + fmtDay(l.at, lang).date + ' · ' + num(a.n) : a.lot; });
+  return { kind: 'trf', at: m.at, date: f.date, day: f.day, time: f.time, from: L.from, to: L.to, fromName: locName(L.from, lang), toName: locName(L.to, lang), by: m.by || '', note: m.note || '', auto: !!m.batch, short: m.short ? num(m.short) : '',
+    items: [{ item: nameOf(m.s, D.items, D.pending_items, lang), sku: m.s, lines: linesTxt(m, lang), tot: num(m.tot) + ' ' + uname(m.base, lang), lots: lots.join(' / '), un: m.un ? num(m.un) : '' }] };
 }
 // سند استلام: دفعة واحدة {move} أو كل دفعات فاتورة {inv}
 function buildRec(params, D, lang) {
@@ -76,10 +87,11 @@ function buildDlv(params, D, lang) {
     items: recs.map(m => { const it = (D.items || []).find(i => i.s === m.s); const lots = (m.alloc || []).map(a => { const l = lotOf(a.lot); return l ? (l.batch ? (lang === 'en' ? 'roasted ' : 'تحميص ') : supName(l.sup, lang) + ' ') + fmtDay(l.at, lang).date + ' · ' + num(a.n) : a.lot; });
       return { item: nameOf(m.s, D.items, D.pending_items, lang), origin: it ? (lang === 'en' ? it.en : it.ar) : m.s, cat: it ? it.c : '', lines: linesTxt(m, lang), tot: num(m.tot) + ' ' + uname(m.base, lang), lots: lots.join(' / '), un: m.un ? num(m.un) : '' }; }) };
 }
-function build(kind, params, D, lang) { if (kind === 'mov') return buildMov(params, D, lang); if (kind === 'rec') return buildRec(params, D, lang); if (kind === 'dlv') return buildDlv(params, D, lang); throw new Error('kind'); }
+function build(kind, params, D, lang) { if (kind === 'mov') return buildMov(params, D, lang); if (kind === 'rec') return buildRec(params, D, lang); if (kind === 'dlv') return buildDlv(params, D, lang); if (kind === 'trf') return buildTrf(params, D, lang); throw new Error('kind'); }
 /* ---------- التوقيع الإلكتروني ----------
    يُحفظ على سجل المستند في live/docs_out: sigs:[{role, name, png (base64 بلا بادئة), at, by, ua, hash}] حيث hash = sha256(docNo + role + name + at + png).
-   الأدوار: سند استلام rcv «المستلم (دال)» و sup «مندوب المورد»؛ سند تسليم dlv «المسلّم (دال)» و cust «المستلم (العميل)»؛ appr «اعتماد» للمالك فقط على أي مستند.
+   الأدوار: سند استلام rcv «المستلم (دال)» و sup «مندوب المورد»؛ سند تسليم dlv «المسلّم (دال)» و cust «المستلم (العميل)»؛ سند نقل داخلي snd «المسلّم» و rcv «المستلم»؛ appr «اعتماد» للمالك فقط على أي مستند.
+   دور الموظف «الخاص» بكل نوع (rec: rcv، dlv: dlv، trf: snd) يحمل اسم حساب الدخول دائمًا؛ الدور الآخر يُكتب اسمه (الطرف المقابل على جوال الموظف).
    توقيع واحد لكل دور؛ بعده يُقفل الدور، ويُقفل محتوى المستند (لا تراجع عن حركته).
    التخزين: الفهرس مقسّم بالسنة live/docs_out_<YYYY> (سقف 2000 سجل لكل سنة، يُهيَّأ أول مرة من الفهرس القديم live/docs_out الذي يبقى للقراءة المتوافقة)،
    وصور التواقيع خارج الفهرس في live/sigs_<YYYY> مفهرسة برقم المستند ثم الدور {png, ua}؛ الفهرس يحمل {role, name, at, by, hash, sigRef} فقط.
@@ -94,9 +106,10 @@ function docsSeed(legacy, year) { const L = legacy || {}; const seq = {}; for (c
 function docsMerge(st, legacy) { const seen = new Set(((st && st.items) || []).map(x => x.no)); return ((st && st.items) || []).concat(((legacy && legacy.items) || []).filter(x => !seen.has(x.no))).sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))); }
 const docsFind = (st, legacy, no) => ((st && st.items) || []).find(x => x.no === no) || ((legacy && legacy.items) || []).find(x => x.no === no) || null;
 const crypto = require('crypto');
-const SIG_ROLES = { rec: ['rcv', 'sup', 'appr'], dlv: ['dlv', 'cust', 'appr'], mov: ['appr'] }, OWNER_ROLES = ['appr'], STAFF_ROLES = ['rcv', 'dlv'];   // أدوار الموظف: الاسم من حساب الدخول دائمًا، لا من الطلب
-const SIG_LABEL = { rcv: ['المستلم (دال)', 'Received by (Dal)'], sup: ['مندوب المورد', 'Supplier representative'], dlv: ['المسلّم (دال)', 'Delivered by (Dal)'], cust: ['المستلم (العميل)', 'Received by (customer)'], appr: ['اعتماد المالك', 'Owner approval'] };
-const sigLabel = (role, lang) => (SIG_LABEL[role] || [role, role])[lang === 'en' ? 1 : 0];
+const SIG_ROLES = { rec: ['rcv', 'sup', 'appr'], dlv: ['dlv', 'cust', 'appr'], trf: ['snd', 'rcv', 'appr'], mov: ['appr'] }, OWNER_ROLES = ['appr'], OWN_ROLE = { rec: 'rcv', dlv: 'dlv', trf: 'snd' }, STAFF_ROLES = ['rcv', 'dlv', 'snd'];   // دور الموظف نفسه لكل نوع: الاسم من حساب الدخول دائمًا، لا من الطلب
+const SIG_LABEL = { rcv: ['المستلم (دال)', 'Received by (Dal)'], sup: ['مندوب المورد', 'Supplier representative'], dlv: ['المسلّم (دال)', 'Delivered by (Dal)'], cust: ['المستلم (العميل)', 'Received by (customer)'], snd: ['المسلّم', 'Handed over by'], appr: ['اعتماد المالك', 'Owner approval'] };
+const TRF_LABEL = { rcv: ['المستلم', 'Received by'] };   // في سند النقل «المستلم» موظف دال في الموقع الآخر، لا «(دال)» ولا عميل
+const sigLabel = (role, lang, kind) => ((kind === 'trf' && TRF_LABEL[role]) || SIG_LABEL[role] || [role, role])[lang === 'en' ? 1 : 0];
 const PNG_MAX = 40 * 1024;   // طول سلسلة data URL كاملة
 // يتحقق من صورة التوقيع: data:image/png;base64 صالحة ≤ 40 كيلوبايت وترويسة PNG حقيقية؛ يرجع base64 بلا بادئة
 function sigPng(v) {
@@ -110,7 +123,7 @@ const isSigned = (docs, no) => !!(docs && (docs.items || []).find(x => x.no === 
 function sigAdd(docs, no, j, who, by, ua, now, owner) {
   const st = Object.assign({ seq: {}, items: [] }, docs || {}); st.items = (st.items || []).slice(); const i = st.items.findIndex(x => x.no === String(no || '')); if (i < 0) throw new Error('nf');
   const it = st.items[i]; const role = String(j.role || ''); if (!(SIG_ROLES[it.kind] || []).includes(role)) throw new Error('role'); if (OWNER_ROLES.includes(role) && !owner) throw new Error('forbidden');
-  if (sigOf(it, role)) throw new Error('dup'); const png = sigPng(j.png); const name = String(STAFF_ROLES.includes(role) || j.name == null ? who : j.name).trim().slice(0, 80); if (!name) throw new Error('name');
+  if (sigOf(it, role)) throw new Error('dup'); const png = sigPng(j.png); const name = String(OWN_ROLE[it.kind] === role || j.name == null ? who : j.name).trim().slice(0, 80); if (!name) throw new Error('name');
   const y = yearOfNo(it.no) || yearOfAt(it.at); const entry = { role, name, at: now, by: String(by || '').slice(0, 40), hash: sigHash(it.no, role, name, now, png), sigRef: sigsPath(y).slice(5) + ':' + it.no + ':' + role };
   const sig = Object.assign({}, entry, { png, ua: String(ua || '').replace(/\s+/g, ' ').slice(0, 80) });
   st.items[i] = Object.assign({}, it, { sigs: (it.sigs || []).concat([entry]) }); st.at = now; return { st, item: st.items[i], sig, year: y };
@@ -152,14 +165,14 @@ function html(doc, meta, lang) {
   const sigs = Array.isArray(meta.sigs) ? meta.sigs : []; const sg = role => sigs.find(s => s.role === role);
   const ft = `<div class="ft">${sigs.length ? `<div class="sgl">${esc(L(lang, 'موقّع إلكترونياً عبر تطبيق دال', 'Signed electronically via the Dal app'))} · <span dir="ltr">${esc(meta.no || '')}</span></div>` : ''}<div class="r"><span>${esc(meta.no || '')} · ${esc(L(lang, 'طُبع', 'Printed'))} ${esc(gen.full)} ${gen.time}${meta.by ? ' · ' + esc(meta.by) : ''}${meta.reprint ? ' · ' + esc(L(lang, 'إعادة طباعة', 'Reprint')) : ''}</span><span>${esc(L(lang, 'الكميات بوحداتها، بلا أسعار', 'Quantities in their units, no prices'))}</span></div></div>`;
   // صندوق توقيع: موقّع (صورة + اسم + يوم/تاريخ/وقت الرياض + أول 10 من البصمة) أو فارغ (الاسم والتوقيع)
-  const sigBox = (role, blank) => { const s = sg(role); const label = sigLabel(role, lang); if (!s) return `<div><b>${esc(label)}</b>${esc(blank || L(lang, 'الاسم والتوقيع', 'Name and signature'))}</div>`;
+  const sigBox = (role, blank) => { const s = sg(role); const label = sigLabel(role, lang, doc.kind); if (!s) return `<div><b>${esc(label)}</b>${esc(blank || L(lang, 'الاسم والتوقيع', 'Name and signature'))}</div>`;
     const f = fmtDay(s.at, lang); return `<div class="sg"><b>${esc(label)}</b><img src="data:image/png;base64,${esc(s.png)}" alt=""><div class="sn">${esc(s.name)}</div><div class="sd">${esc(f.full)} · ${f.time}</div><div class="sh">${esc(String(s.hash || '').slice(0, 10))}</div><span class="sv">${esc(L(lang, 'موقّع إلكترونياً', 'Signed electronically'))}</span></div>`; };
   const sigGrid = roles => { const R = roles.concat(sg('appr') && !roles.includes('appr') ? ['appr'] : []); return `<div class="sig ${R.length === 3 ? 'c3' : R.length === 1 ? 'c1' : ''}">${R.map(r => sigBox(r)).join('')}</div>`; };
   let body = '';
   if (doc.kind === 'mov') {
     const per = (doc.from || doc.to) ? (doc.from ? fmtDay(doc.from + 'T12:00:00Z', lang).full : '…') + ' → ' + (doc.to ? fmtDay(doc.to + 'T12:00:00Z', lang).full : '…') : L(lang, 'كل الحركات', 'All movements');
-    body = `<div class="kv"><div><span>${L(lang, 'الفترة', 'Period')}</span><b>${esc(per)}</b></div><div><span>${L(lang, 'عدد الحركات', 'Movements')}</span><b>${doc.n}</b></div>${doc.filter.item ? `<div><span>${L(lang, 'الصنف', 'Item')}</span><b>${esc(doc.filter.item)}</b></div>` : ''}${doc.filter.sup ? `<div><span>${L(lang, 'المورد', 'Supplier')}</span><b>${esc(doc.filter.sup)}</b></div>` : ''}${doc.filter.cust ? `<div><span>${L(lang, 'العميل', 'Customer')}</span><b>${esc(doc.filter.cust)}</b></div>` : ''}</div>` +
-      (doc.rows.length ? `<table><thead><tr><th>${L(lang, 'التاريخ', 'Date')}</th><th>${L(lang, 'اليوم', 'Day')}</th><th>${L(lang, 'الوقت', 'Time')}</th><th>${L(lang, 'النوع', 'Type')}</th><th>${L(lang, 'الصنف', 'Item')}</th><th>${L(lang, 'الأسطر', 'Lines')}</th><th>${L(lang, 'الإجمالي', 'Total')}</th><th>${L(lang, 'الدفعة / المورد / العميل', 'Lot / supplier / customer')}</th><th>${L(lang, 'الموظف', 'Staff')}</th></tr></thead><tbody>${doc.rows.map(r => `<tr><td class="n">${esc(r.date)}</td><td>${esc(r.day)}</td><td class="n">${esc(r.time)}</td><td class="${r.t === 'out' ? 'out' : r.t === 'in' ? 'in' : 'mut'}">${esc(r.type)}</td><td>${esc(r.item)}</td><td class="n">${esc(r.lines)}</td><td class="n ${r.t}">${esc(r.tot)}</td><td>${esc(r.who)}${r.inv ? ` <span class="mut">${L(lang, 'فاتورة', 'inv.')} ${esc(r.inv)}</span>` : ''}${r.doc ? `<div class="mut" dir="ltr" style="text-align:${en ? 'left' : 'right'}">${esc(r.doc)}</div>` : ''}</td><td>${esc(r.by)}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">${L(lang, 'لا حركات في هذه الفترة.', 'No movements in this period.')}</div>`) + sigGrid(['appr']);
+    body = `<div class="kv"><div><span>${L(lang, 'الفترة', 'Period')}</span><b>${esc(per)}</b></div><div><span>${L(lang, 'عدد الحركات', 'Movements')}</span><b>${doc.n}</b></div>${doc.filter.item ? `<div><span>${L(lang, 'الصنف', 'Item')}</span><b>${esc(doc.filter.item)}</b></div>` : ''}${doc.filter.sup ? `<div><span>${L(lang, 'المورد', 'Supplier')}</span><b>${esc(doc.filter.sup)}</b></div>` : ''}${doc.filter.cust ? `<div><span>${L(lang, 'العميل', 'Customer')}</span><b>${esc(doc.filter.cust)}</b></div>` : ''}${doc.filter.loc ? `<div><span>${L(lang, 'الموقع', 'Location')}</span><b>${esc(doc.filter.loc)}</b></div>` : ''}</div>` +
+      (doc.rows.length ? `<table><thead><tr><th>${L(lang, 'التاريخ', 'Date')}</th><th>${L(lang, 'اليوم', 'Day')}</th><th>${L(lang, 'الوقت', 'Time')}</th><th>${L(lang, 'النوع', 'Type')}</th><th>${L(lang, 'الصنف', 'Item')}</th><th>${L(lang, 'الأسطر', 'Lines')}</th><th>${L(lang, 'الإجمالي', 'Total')}</th><th>${L(lang, 'من', 'From')}</th><th>${L(lang, 'إلى', 'To')}</th><th>${L(lang, 'الدفعة / المورد / العميل', 'Lot / supplier / customer')}</th><th>${L(lang, 'الموظف', 'Staff')}</th></tr></thead><tbody>${doc.rows.map(r => `<tr><td class="n">${esc(r.date)}</td><td>${esc(r.day)}</td><td class="n">${esc(r.time)}</td><td class="${r.t === 'out' ? 'out' : r.t === 'in' ? 'in' : 'mut'}">${esc(r.type)}</td><td>${esc(r.item)}</td><td class="n">${esc(r.lines)}</td><td class="n ${r.t}">${esc(r.tot)}</td><td>${esc(r.from || '—')}</td><td>${esc(r.to || '—')}</td><td>${esc(r.who)}${r.inv ? ` <span class="mut">${L(lang, 'فاتورة', 'inv.')} ${esc(r.inv)}</span>` : ''}${r.doc ? `<div class="mut" dir="ltr" style="text-align:${en ? 'left' : 'right'}">${esc(r.doc)}</div>` : ''}</td><td>${esc(r.by)}</td></tr>`).join('')}</tbody></table>` : `<div class="empty">${L(lang, 'لا حركات في هذه الفترة.', 'No movements in this period.')}</div>`) + sigGrid(['appr']);
   } else if (doc.kind === 'rec') {
     body = `<div class="kv"><div><span>${L(lang, 'المورد', 'Supplier')}</span><b>${esc(doc.supplier)}${doc.pending ? ' <span class="mut">(' + L(lang, 'مورد جديد بانتظار الاعتماد', 'new supplier, pending approval') + ')</span>' : ''}</b></div><div><span>${L(lang, 'تاريخ الاستلام', 'Received on')}</span><b>${esc(doc.day + ' ' + doc.date)} · ${doc.time}</b></div>` +
       (doc.invoice ? `<div><span>${L(lang, 'مرجع الفاتورة', 'Invoice ref.')}</span><b dir="ltr">${esc(doc.invoice.no || '—')}</b></div><div><span>${L(lang, 'تاريخ الفاتورة', 'Invoice date')}</span><b>${esc(doc.invoice.date || '—')}</b></div>` : `<div><span>${L(lang, 'مرجع الفاتورة', 'Invoice ref.')}</span><b>—</b></div>`) + `<div><span>${L(lang, 'استلمه', 'Received by')}</span><b>${esc(doc.by)}</b></div></div>` +
@@ -170,6 +183,11 @@ function html(doc, meta, lang) {
     body = `<div class="kv"><div><span>${L(lang, 'العميل', 'Customer')}</span><b>${esc(doc.customer)}${doc.pending ? ' <span class="mut">(' + L(lang, 'عميل جديد', 'new customer') + ')</span>' : ''}</b></div><div><span>${L(lang, 'تاريخ التسليم', 'Delivered on')}</span><b>${esc(doc.day + ' ' + doc.date)} · ${doc.time}</b></div><div><span>${L(lang, 'سلّمه', 'Delivered by')}</span><b>${esc(doc.by)}</b></div>${doc.note ? `<div><span>${L(lang, 'ملاحظة', 'Note')}</span><b>${esc(doc.note)}</b></div>` : ''}</div>` +
       `<table><thead><tr><th>#</th><th>${L(lang, 'المحصول / الصنف', 'Origin / item')}</th><th>${L(lang, 'الكمية', 'Quantity')}</th><th>${L(lang, 'الإجمالي', 'Total')}</th><th>${L(lang, 'الدفعة', 'Lot / batch')}</th></tr></thead><tbody>${doc.items.map((it, i) => `<tr><td class="n">${i + 1}</td><td>${esc(it.item)}</td><td class="n">${esc(it.lines)}</td><td class="n out">${esc(it.tot)}</td><td class="n mut">${esc(it.lots || '—')}${it.un ? ' · ' + L(lang, 'بلا دفعة', 'no lot') + ' ' + esc(it.un) : ''}</td></tr>`).join('')}</tbody></table>` +
       sigGrid(['dlv', 'cust']);
+  } else if (doc.kind === 'trf') {
+    body = `<div class="kv"><div><span>${L(lang, 'من', 'From')}</span><b>${esc(doc.fromName)}</b></div><div><span>${L(lang, 'إلى', 'To')}</span><b>${esc(doc.toName)}</b></div><div><span>${L(lang, 'تاريخ النقل', 'Transferred on')}</span><b>${esc(doc.day + ' ' + doc.date)} · ${doc.time}</b></div><div><span>${L(lang, 'سجّله', 'Recorded by')}</span><b>${esc(doc.by)}</b></div>${doc.note ? `<div><span>${L(lang, 'ملاحظة', 'Note')}</span><b>${esc(doc.note)}</b></div>` : ''}${doc.auto ? `<div><span>${L(lang, 'النوع', 'Type')}</span><b>${L(lang, 'نقل تلقائي للتحميص', 'Automatic transfer for roasting')}</b></div>` : ''}</div>` +
+      `<table><thead><tr><th>#</th><th>${L(lang, 'الصنف', 'Item')}</th><th>${L(lang, 'الكمية بوحداتها', 'Quantity in units')}</th><th>${L(lang, 'الإجمالي بالوحدة الأساسية', 'Total in base unit')}</th><th>${L(lang, 'الدفعة', 'Lot / batch')}</th></tr></thead><tbody>${doc.items.map((it, i) => `<tr><td class="n">${i + 1}</td><td>${esc(it.item)}<div class="mut" dir="ltr">DAL:${esc(it.sku)}</div></td><td class="n">${esc(it.lines)}</td><td class="n">${esc(it.tot)}</td><td class="n mut">${esc(it.lots || '—')}${it.un ? ' · ' + L(lang, 'بلا دفعة', 'no lot') + ' ' + esc(it.un) : ''}</td></tr>`).join('')}</tbody></table>` +
+      (doc.short ? `<div class="warn">${L(lang, 'رصيد الموقع المصدر لم يغطِّ الكمية، النقص: ', 'The source location did not cover the quantity; shortfall: ')}${esc(doc.short)}</div>` : '') +
+      sigGrid(['snd', 'rcv']);
   }
   return head + hd + body + ft + '</body></html>';
 }
@@ -185,4 +203,4 @@ async function renderPdf(htmlStr) {
   finally { await p.close().catch(() => {}); clearTimeout(pbTimer); pbTimer = setTimeout(() => { if (PB) { PB.close().catch(() => {}); PB = null; } }, 60e3); }
 }
 async function closeBrowser() { clearTimeout(pbTimer); if (PB) { await PB.close().catch(() => {}); PB = null; } }
-module.exports = { fmtDay, dayIso, KINDS, docNext, docAdd, build, html, renderPdf, closeBrowser, typeOf, scrubAmounts, pickParams, SIG_ROLES, OWNER_ROLES, sigLabel, sigPng, sigHash, sigAdd, sigStrip, sigOf, isSigned, sigVerify, PNG_MAX, LEGACY, docsPath, sigsPath, yearOfNo, yearOfAt, docsSeed, docsMerge, docsFind, sigsPut, sigMerge, snapOf, docData };
+module.exports = { fmtDay, dayIso, KINDS, docNext, docAdd, build, html, renderPdf, closeBrowser, typeOf, scrubAmounts, pickParams, SIG_ROLES, OWNER_ROLES, OWN_ROLE, STAFF_ROLES, sigLabel, sigPng, sigHash, sigAdd, sigStrip, sigOf, isSigned, sigVerify, PNG_MAX, LEGACY, docsPath, sigsPath, yearOfNo, yearOfAt, docsSeed, docsMerge, docsFind, sigsPut, sigMerge, snapOf, docData };
