@@ -587,7 +587,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -674,9 +674,10 @@ async function vncCheck() {
   if (!VNC.ws) { VNC.fixed++; spawn('websockify', ['--web', '/usr/share/novnc', '127.0.0.1:6080', '127.0.0.1:5900'], { detached: true, stdio: 'ignore' }).unref(); }
 }
 setTimeout(vncCheck, 20e3); setInterval(vncCheck, 60e3);
+const KEEP = require('./keepalive')({ E, getCtx: () => ctx, notify: notifyOwner, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // تبويب ثابت لكل منصة يُحدَّث كل 30 ثانية
 const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, getCtx: () => ctx, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // أرقام فودكس لحظية (الكونسول كل 30 ثانية، المحاسبي كل 10 دقائق)   // جسر سلة → فودكس
 
 if (require.main !== module) { module.exports = { STAFF_PAGES, DOCS, XR, docPdf, docSign, docsRead, srv, SF }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { SF.start(); FX.start(); setTimeout(retmLive, 45e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { SF.start(); FX.start(); KEEP.start(); setTimeout(retmLive, 45e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }
