@@ -169,9 +169,38 @@ async function fastSales() {   // فودكس ورتم وحدهما كل FAST_SEC
   if (viewers > 0 || Date.now() - lastView < 3 * 60e3) return;
   fastBusy = true;
   try {
-    for (const k of FAST_K) { const s = SITES.find(x => x.k === k); state.sites[k] = Object.assign({ name: s.name }, await readSite(s)); }
+    for (const k of FAST_K) { if (k === 'retm' && RL.page && !RL.err) { await retmRefresh('timer'); continue; } const s = SITES.find(x => x.k === k); state.sites[k] = Object.assign({ name: s.name }, await readSite(s)); }
     await publishSales();
   } catch (e) { console.log('fast', e.message); } finally { fastBusy = false; }
+}
+/* ===== رتم لحظياً: تبويب واحد يبقى مفتوحاً على لوحة رتم. اللوحة نفسها مشتركة في قناة رتم الحية (Pusher: private-POS.<الشركة>)،
+   فنستمع لكل حدث يصلها (فاتورة جديدة، إرجاع، إقفال…) ونعيد قراءة اللوحة فوراً وننشر الرقم — بدل انتظار الدورة. الدورة كل 30 ثانية تبقى احتياطاً. */
+const RL = { page: null, err: null, at: null, evAt: null, evs: [], n: 0 };
+let rlBusy = false, rlAgain = false, rlTimer = null;
+async function retmRefresh(why) {
+  if (!RL.page) return; if (rlBusy) { rlAgain = true; return; } rlBusy = true;
+  try {
+    const p = RL.page; await p.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    await p.waitForFunction(() => /\d/.test((document.body && document.body.innerText) || '') && !document.querySelector('.pace-running'), null, { timeout: 12000 }).catch(() => {});
+    await p.waitForTimeout(1200);
+    const url = p.url(); const text = (await p.evaluate(() => document.body ? document.body.innerText : '')).replace(/\n{3,}/g, '\n\n').trim().slice(0, 8000);
+    const s = SITES.find(x => x.k === 'retm'); const needLogin = s.login.test(url) || /تسجيل الدخول|Sign in|Log in|كلمة المرور|Password/i.test(text.slice(0, 600));
+    state.sites.retm = { name: s.name, at: new Date().toISOString(), ok: !needLogin, needLogin, url, text, via: why };
+    RL.at = state.sites.retm.at; RL.err = needLogin ? 'needLogin' : null; RL.n++;
+    if (why !== 'timer') await publishSales();
+  } catch (e) { RL.err = String(e.message || e).slice(0, 120); } finally { rlBusy = false; if (rlAgain) { rlAgain = false; setTimeout(() => retmRefresh('event'), 300); } }
+}
+async function retmLive() {
+  if (!ctx || RL.page) return;
+  try {
+    const p = await ctx.newPage(); RL.page = p; p.on('close', () => { RL.page = null; setTimeout(retmLive, 60e3); });
+    await p.exposeFunction('__dalRetmEv', ev => { RL.evAt = new Date().toISOString(); RL.evs = RL.evs.concat([String(ev).slice(0, 60)]).slice(-10); clearTimeout(rlTimer); rlTimer = setTimeout(() => retmRefresh('event'), 800); });
+    // بعد كل تحميل للصفحة: ننتظر اتصال اللوحة بقناتها الحية ثم نستمع لأحداثها (أسماء الأحداث فقط تُسجّل، بلا بيانات)
+    await p.addInitScript(() => { const tick = () => { const P = window.Pusher, i = P && P.instances && P.instances[0]; if (!i) return setTimeout(tick, 1000); if (i.__dal) return; i.__dal = 1; i.bind_global(ev => { if (!/^pusher[:_]/.test(ev)) window.__dalRetmEv(ev); }); }; tick(); });
+    await p.goto(SITES.find(x => x.k === 'retm').url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await p.waitForTimeout(6000); await retmRefresh('start');
+    console.log('retm live', RL.err || 'ok');
+  } catch (e) { RL.err = String(e.message || e).slice(0, 120); console.log('retm live err', RL.err); }
 }
 async function launch() {
   ctx = await chromium.launchPersistentContext('/data/profile', {
@@ -561,7 +590,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -642,5 +671,5 @@ const SF = require('./salla_foodics')({ E, fs, gas: (GAS && KEY) ? gas : null, n
 
 if (require.main !== module) { module.exports = { STAFF_PAGES, DOCS, XR, docPdf, docSign, docsRead, srv, SF }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { SF.start(); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { SF.start(); setTimeout(retmLive, 45e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }
