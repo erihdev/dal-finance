@@ -428,8 +428,8 @@ async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BO
 // ===== بوابة الموظفين: حسابات برموز PIN وصلاحيات لكل صفحة (يشوف/يعدّل)، تُفرض هنا على الخادم لا في المتصفح =====
 const crypto2 = require('crypto');
 // صفحات الموظفين والمستندات التي تقرؤها كل صفحة. «move» (حركة المخزون) يحتاج الحركات والوحدات وآخر جرد للرصيد وفهرس الفواتير (مختصر) للاستلام
-const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state', 'units'], roastx: ['roast_ext'], units: ['units', 'pending_items', 'alerts_stock'], move: ['moves', 'units', 'stock', 'count_state', 'invoices', 'suppliers', 'pending_items', 'alerts_stock', 'customers', 'docs_out', 'roast_log', 'staff_names'], roast: ['roast_log', 'stock', 'moves', 'units', 'docs_out'], _any: ['alerts_stock'] };
-const DOCS = require('./docs');   // المستندات المطبوعة: سجل الحركة / سند استلام / سند تسليم (PDF مرقّم)
+const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state', 'units'], roastx: ['roast_ext', 'docs_out'], units: ['units', 'pending_items', 'alerts_stock'], move: ['moves', 'units', 'stock', 'count_state', 'invoices', 'suppliers', 'pending_items', 'alerts_stock', 'customers', 'docs_out', 'roast_log', 'staff_names'], roast: ['roast_log', 'stock', 'moves', 'units', 'docs_out'], _any: ['alerts_stock'] };
+const DOCS = require('./docs'); const XR = require('./xroast');   // تحميص العملاء (سلو والعملاء الخارجيين)   // المستندات المطبوعة: سجل الحركة / سند استلام / سند تسليم (PDF مرقّم)
 // ===== مفاتيح الوحدات وحركة المخزون: الأساس مقفول على وحدة فودكس من count-items.json (نسخة مطابقة لملف التطبيق) =====
 const DALU = require('./units-core');
 let CITEMS = []; try { CITEMS = JSON.parse(fs.readFileSync(__dirname + '/count-items.json', 'utf8')).items || []; } catch (e) { console.log('count-items missing', e.message); }
@@ -604,12 +604,14 @@ async function docsRead(year, extra) {
 async function docPdf(j, who) {
   const lang = j.lang === 'en' ? 'en' : 'ar'; const now = new Date().toISOString();
   return countQueue(async () => {
-    const year = j.no ? (DOCS.yearOfNo(j.no) || CY()) : CY(); const X = await docsRead(year, ['live/moves', 'live/pending_items', 'live/invoices']); const g = n => X.g('live/' + n);
-    const moves = g('moves') || { list: [] }; let docs = X.st; let item = null, reprint = false;
-    const D = { moves, pending_items: g('pending_items') || { items: [] }, invoices: g('invoices') || { items: [] }, items: CITEMS };
+    const year = j.no ? (DOCS.yearOfNo(j.no) || CY()) : CY(); const X = await docsRead(year, ['live/moves', 'live/pending_items', 'live/invoices', 'live/roast_ext']); const g = n => X.g('live/' + n);
+    const moves = g('moves') || { list: [] }; let docs = X.st; let item = null, reprint = false; const xdoc = XR.normalize(g('roast_ext') || {});
+    const D = { moves, pending_items: g('pending_items') || { items: [] }, invoices: g('invoices') || { items: [] }, items: CITEMS, roast_ext: xdoc };
     if (j.no) { item = DOCS.docsFind(docs, X.legacy, String(j.no)); if (!item) throw new Error('nf'); reprint = true; }
     else { const kind = String(j.kind || ''); if (!DOCS.KINDS[kind]) throw new Error('kind'); const params = DOCS.pickParams(kind, j.params); DOCS.build(kind, params, D, lang);   // حقول معروفة فقط تُحفظ في الفهرس (لا نص حر طويل)؛ البناء أولًا حتى لا يُستهلك رقم لمستند لا يُبنى
       const mv = params.move && (moves.list || []).find(x => x.id === params.move); if (mv && mv.doc) { item = DOCS.docsFind(docs, X.legacy, mv.doc); reprint = !!item; }
+      const xr = params.x && xdoc.list.find(x => x.id === params.x); if (xr && xr.doc) { item = DOCS.docsFind(docs, X.legacy, xr.doc); reprint = !!item; }
+      if (!item && xr) { const da = DOCS.docAdd(docs, kind, params, who, now, { cust: xr.cust.id, name: xr.cust.name, coffee: xr.coffee }); docs = da.st; item = da.item; xr.doc = item.no; xdoc.at = now; await gas({ op: 'set', path: 'live/roast_ext', data: xdoc }); await gas({ op: 'set', path: X.path, data: docs }); }
       if (!item) { const ref = kind === 'mov' ? { from: params.from, to: params.to, item: params.item, sup: params.sup, cust: params.cust, loc: params.loc } : mv ? (mv.sup ? { sup: mv.sup.id, name: mv.sup.name, item: mv.s } : mv.cust ? { cust: mv.cust.id, name: mv.cust.name, item: mv.s } : kind === 'trf' ? Object.assign({ item: mv.s }, DALU.locs(mv, moves.list)) : { item: mv.s }) : { inv: params.inv };
         const da = DOCS.docAdd(docs, kind, params, who, now, ref); docs = da.st; item = da.item; if (mv) { mv.doc = item.no; moves.at = now; await gas({ op: 'set', path: 'live/moves', data: moves }); } await gas({ op: 'set', path: X.path, data: docs }); } }
     let sigs = item.sigs || []; if (sigs.length) { const rs = await gas({ op: 'get', paths: [DOCS.sigsPath(DOCS.yearOfNo(item.no) || year)] }); const sd = rs.docs && rs.docs[DOCS.sigsPath(DOCS.yearOfNo(item.no) || year)]; sigs = DOCS.sigMerge(item, (sd && sd.data) || null).sigs; }
@@ -620,11 +622,12 @@ async function docPdf(j, who) {
 }
 // توقيع إلكتروني على مستند: {no, role, name, png} أو (المالك فقط) {kind:'mov', params, adj, role:'appr', name, png} يُنشئ سجل الحركة ثم يوقّعه ويعلّم فرق الجرد adj بالرقم.
 // يرجع {item (سجل المستند كاملًا), sig}. الأخطاء: nf 404 | role/png/name/params 400 | forbidden 403 | dup 409
-async function docSign(j, who, by, ua, owner) {
+async function docSign(j, who, by, ua, owner, kinds) {
   const now = new Date().toISOString();
   return countQueue(async () => {
-    let no = String(j.no || ''); const year = no ? (DOCS.yearOfNo(no) || CY()) : CY(); const X = await docsRead(year, ['live/moves', 'live/pending_items', 'live/invoices', DOCS.sigsPath(year)]); const g = n => X.g('live/' + n);
-    let docs = X.st; let moves = null; const D = { moves: g('moves') || { list: [] }, pending_items: g('pending_items') || { items: [] }, invoices: g('invoices') || { items: [] }, items: CITEMS };
+    let no = String(j.no || ''); const year = no ? (DOCS.yearOfNo(no) || CY()) : CY(); const X = await docsRead(year, ['live/moves', 'live/pending_items', 'live/invoices', 'live/roast_ext', DOCS.sigsPath(year)]); const g = n => X.g('live/' + n);
+    let docs = X.st; let moves = null; const D = { moves: g('moves') || { list: [] }, pending_items: g('pending_items') || { items: [] }, invoices: g('invoices') || { items: [] }, items: CITEMS, roast_ext: XR.normalize(g('roast_ext') || {}) };
+    if (kinds) { const it0 = DOCS.docsFind(docs, X.legacy, no); if (!it0 || !kinds.includes(it0.kind)) throw new Error('forbidden'); }   // موظف تحميص العملاء يوقّع سندات العملاء فقط
     if (!no && j.kind === 'mov') { if (!owner) throw new Error('forbidden'); const params = DOCS.pickParams('mov', j.params); DOCS.build('mov', params, D, 'ar');   // يتحقق من التواريخ قبل الترقيم
       const adj = j.adj ? String(j.adj).slice(0, 40) : ''; const da = DOCS.docAdd(docs, 'mov', params, who, now, Object.assign({ from: params.from, to: params.to, item: params.item }, adj ? { adj } : {})); docs = da.st; no = da.item.no;
       if (adj) { moves = D.moves; const i = (moves.list || []).findIndex(x => x.id === adj && x.t === 'adj'); if (i < 0) throw new Error('nf'); moves.list = moves.list.slice(); moves.list[i] = Object.assign({}, moves.list[i], { appr: no }); moves.at = now; } }
@@ -674,8 +677,9 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       if (out.customers) { const full = can('customers', 'view'); out.customers = { list: (out.customers.list || []).map(x => custStaff(x, full)) }; }
       // فهرس الفواتير لمن ليس عنده صفحة الفواتير (الاستلام في حركة المخزون): بلا مبالغ، فقط المورد والتاريخ والرقم ووصف الأصناف (مع حذف أي مبلغ ورد في الوصف)
       if (out.invoices && !can('invoices', 'view')) out.invoices = { items: (out.invoices.items || []).map(x => ({ id: x.id, at: x.at, date: x.date, supplier: x.supplier, invoice_no: x.invoice_no, items: DOCS.scrubAmounts(x.items), from: x.from, status: x.status })) };
+      if (names.includes('roast_ext')) out.roast_ext = XR.normalize(out.roast_ext || {});   // تحميص العملاء: الهيكل الموحّد (العملاء + السجل)، بلا أسعار أصلاً
       if (out.suppliers) out.suppliers = { list: (out.suppliers.list || []).map(x => ({ id: x.id, name: x.name })) };   // أسماء الموردين فقط، بلا أسعار ولا فواتير
-      if (out.docs_out) out.docs_out = Object.assign({}, out.docs_out, { items: (out.docs_out.items || []).map(x => DOCS.sigStrip(x, null)) });   // التواقيع: الأسماء والبصمات فقط، بلا صور (الصور في مخزن منفصل) وبلا النسخة المجمّدة
+      if (out.docs_out) out.docs_out = Object.assign({}, out.docs_out, { items: (out.docs_out.items || []).filter(x => can('move', 'view') || x.kind === 'xrc' || x.kind === 'xdl').map(x => DOCS.sigStrip(x, null)) });   // بلا صلاحية الحركة: سندات العملاء فقط   // التواقيع: الأسماء والبصمات فقط، بلا صور (الصور في مخزن منفصل) وبلا النسخة المجمّدة
       if (out.stock) out.stock = Object.assign({}, out.stock, { items: (out.stock.items || []).map(x => ({ id: x.id, name: x.name, o: x.o, st: x.st, q: x.q, n: x.n })) });   // المحاصيل بلا أسعار شراء أو بيع (live/stock يحمل sell/buys للمالك)
       return json(200, { ok: true, docs: out }); } catch (e) { return json(500, { ok: false, err: 'db' }); }
   }
@@ -707,13 +711,13 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       await staffLog(me.name, 'move', (j.op === 'del' ? 'تراجع ' : rec.t === 'in' ? 'إضافة ' : rec.cust ? 'تسليم ' : DALU.isTrf(rec) ? 'نقل ' : 'سحب ') + rec.s + ' ' + rec.tot + ' ' + rec.base + (rec.sup ? ' من ' + rec.sup.name : '') + (rec.cust ? ' إلى ' + rec.cust.name : '') + (j.op !== 'del' && (L.from || L.to) ? ' ' + [L.from ? ln(L.from) : '', L.to ? ln(L.to) : ''].filter(Boolean).join(' ← ') : '') + (rec.short ? ' (نقص ' + rec.short + ')' : '') + (rec.inv ? ' فاتورة ' + (rec.invNo || rec.inv) : '') + (rec.doc ? ' ' + rec.doc : ''));
       return json(200, { ok: true, moves: o.st, rec, events: o.events || [], pending: pend, alerts, doc: docItem, docs_out: docsOut ? { items: DOCS.docsMerge(docsOut, g('docs_out')).map(x => DOCS.sigStrip(x, null)) } : undefined }); }); } catch (e) { return json(e.message === 'signed' ? 409 : 400, { ok: false, err: String(e.message || e) }); } }
   if (path === '/staff/sign' && req.method === 'POST') {   // توقيع إلكتروني {no, role, name, png}: صلاحية الحركة (تعديل) لسندات الاستلام/التسليم؛ «اعتماد» للمالك فقط (403 هنا دائمًا)
-    if (!can('move', 'edit')) return json(403, { ok: false, err: 'forbidden' });
-    try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); if (!j.no) return json(400, { ok: false, err: 'no' }); const o = await docSign(j, me.name, me.id, req.headers['user-agent'], false);
+    if (!can('move', 'edit') && !can('roastx', 'edit')) return json(403, { ok: false, err: 'forbidden' });
+    try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); if (!j.no) return json(400, { ok: false, err: 'no' }); const o = await docSign(j, me.name, me.id, req.headers['user-agent'], false, can('move', 'edit') ? null : ['xrc', 'xdl']);
       return json(200, { ok: true, doc: DOCS.sigStrip(o.item, me.id), sig: { role: o.sig.role, name: o.sig.name, at: o.sig.at, hash: o.sig.hash } }); }
     catch (e) { return json(e.message === 'too-big' ? 413 : SIGN_CODE[e.message] || 500, { ok: false, err: String(e.message || e) }); } }
   if (path === '/staff/doc' && req.method === 'POST') {   // مستند PDF: {kind:'mov'|'rec'|'dlv'|'trf', params, lang} يُرقَّم ويُفهرس، أو {no} لإعادة طباعة مستند بالرقم نفسه
-    if (!(can('move', 'view') || can('roast', 'view'))) return json(403, { ok: false, err: 'forbidden' });
-    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); const out = await docPdf(j, me.name); res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="' + out.no + '.pdf"', 'X-Dal-Doc': out.no }); res.end(out.pdf); return true; }
+    if (!(can('move', 'view') || can('roast', 'view') || can('roastx', 'view'))) return json(403, { ok: false, err: 'forbidden' });
+    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); if (!can('move', 'view') && !can('roast', 'view') && !(j.no ? /^X(RC|DL)-/.test(String(j.no)) : (j.kind === 'xrc' || j.kind === 'xdl'))) return json(403, { ok: false, err: 'forbidden' }); const out = await docPdf(j, me.name); res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="' + out.no + '.pdf"', 'X-Dal-Doc': out.no }); res.end(out.pdf); return true; }
     catch (e) { return json(e.message === 'nf' || e.message === 'kind' || e.message === 'params' ? 400 : 500, { ok: false, err: String(e.message || e) }); } }
   if (path === '/staff/pending' && req.method === 'POST') {   // صنف مؤقت {op:'add', ar, en, u, sup} / مورد مؤقت {op:'sup', name} (حركة · تعديل) / ربط {op:'link', id, sku} (الوحدات · تعديل)
     try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); if (!can(j.op === 'link' ? 'units' : 'move', 'edit')) return json(403, { ok: false, err: 'forbidden' }); return await countQueue(async () => {
@@ -743,6 +747,17 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       else throw new Error('op');
       st.at = now; await gas({ op: 'set', path: 'live/count_state', data: st }); return json(200, { ok: true, state: st, adj });
     }); } catch (e) { return json(400, { ok: false, err: String(e.message || e) }); } }
+  if (path === '/staff/xroast' && req.method === 'POST') {   // تحميص العملاء: {op:'cust', name} | {op:'add', t:'in'|'roast'|'out', cust, coffee, g, r, kg, sacks, bags, n} | {op:'del', id}. استلام/تسليم يأخذ سنداً مرقّماً (XRC/XDL) تلقائياً
+    if (!can('roastx', 'edit')) return json(403, { ok: false, err: 'forbidden' });
+    try { const j = JSON.parse(await readBody(req, 2e4) || '{}'); return await countQueue(async () => {
+      const DP = DOCS.docsPath(CY()); const r = await gas({ op: 'get', paths: ['live/roast_ext', 'live/docs_out', DP] }); const g = n => { const d = r.docs && r.docs[n]; return (d && d.data) || null; }; const now = new Date().toISOString();
+      const docsY = g(DP) || DOCS.docsSeed(g('live/docs_out'), CY()); const signed = no => DOCS.isSigned(docsY, no) || DOCS.isSigned(g('live/docs_out'), no);
+      const o = XR.apply(g('live/roast_ext'), j, me.name, now, { signed }); let docItem = null, docsOut = null;
+      if (j.op === 'add' && (o.rec.t === 'in' || o.rec.t === 'out')) { const kind = o.rec.t === 'in' ? 'xrc' : 'xdl'; const da = DOCS.docAdd(docsY, kind, { x: o.rec.id }, me.name, now, { cust: o.rec.cust.id, name: o.rec.cust.name, coffee: o.rec.coffee }); o.rec.doc = da.item.no; docItem = da.item; docsOut = da.st; }
+      if (docsOut) await gas({ op: 'set', path: DP, data: docsOut }); await gas({ op: 'set', path: 'live/roast_ext', data: o.st });
+      if (o.rec) { await staffLog(me.name, 'roastx', (j.op === 'del' ? 'حذف: ' : '') + XR.describe(o.rec) + (o.rec.doc ? ' ' + o.rec.doc : '')); if (j.op === 'add' && o.rec.t !== 'roast') notifyOwner('تحميص العملاء', me.name + ': ' + XR.describe(o.rec), 'xroast-' + o.rec.id).catch(() => {}); } else if (o.cust) await staffLog(me.name, 'roastx', 'عميل جديد ' + o.cust.name);
+      return json(200, { ok: true, log: o.st, rec: o.rec || null, cust: o.cust || null, doc: docItem, docs_out: docsOut ? { items: DOCS.docsMerge(docsOut, g('live/docs_out')).map(x => DOCS.sigStrip(x, null)) } : undefined }); }); }
+    catch (e) { return json(e.message === 'signed' ? 409 : e.message === 'today' ? 403 : 400, { ok: false, err: String(e.message || e) }); } }
   if (path === '/staff/roast' && req.method === 'POST') {   // سجل التحميص: دال في live/roast_log والعملاء الخارجيين في live/roast_ext — مستندان منفصلان بصلاحيتين. دفعات دال فقط تحرّك المخزون (أخضر ← محمّص)
     try { const j = JSON.parse(await readBody(req, 2e4) || '{}'); const X = j.t === 'ext'; if (!can(X ? 'roastx' : 'roast', 'edit')) return json(403, { ok: false, err: 'forbidden' }); const P = X ? 'live/roast_ext' : 'live/roast_log'; return await countQueue(async () => {
       const r = await gas({ op: 'get', paths: X ? [P] : [P, 'live/moves', 'live/units'] }); const d = r.docs && r.docs[P]; const lg = Object.assign({ list: [] }, (d && d.data) || {}); const now = new Date().toISOString(); const n = v => { const x = Number(v); return isFinite(x) ? Math.round(x * 1000) / 1000 : null; };
@@ -925,7 +940,7 @@ async function readFoodicsCounts() {
     console.log('foodics counts', out.list.length, 'via', via);
   } catch (e) { FC.err = String(e.message || e).slice(0, 120); FC.at = out.at; console.log('foodics counts err', FC.err); } finally { await p.close().catch(() => {}); }
 }
-if (require.main !== module) { module.exports = { unitsApply, moveApply, countAdjust, pendingApply, roastMoves, roastUndo, alertsCompute, STAFF_PAGES, DALU, CITEMS, DOCS, docPdf, docSign, docsRead, srv, fcItems }; } else {
+if (require.main !== module) { module.exports = { unitsApply, moveApply, countAdjust, pendingApply, roastMoves, roastUndo, alertsCompute, STAFF_PAGES, DALU, CITEMS, DOCS, XR, docPdf, docSign, docsRead, srv, fcItems }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
 launch().then(() => { SF.start(); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(readFoodicsCounts, 90e3); setInterval(readFoodicsCounts, 10 * 60e3); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }

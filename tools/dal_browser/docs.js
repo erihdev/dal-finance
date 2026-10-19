@@ -22,7 +22,7 @@ const num = v => v == null || v === '' || isNaN(+v) ? '—' : Number(v).toLocale
 const AMT = /(?:\b(?:SAR|SR)\s*\d[\d,.]*|\d[\d,.]*\s*(?:SAR|SR|ريالاً|ريالات|ريال|ر\.س|هللات|هلل[ةه])(?![A-Za-zء-يٮ-ۓ])|(?:ريال|ر\.س)\s*\d[\d,.]*)/gi;   // \b لا يعمل مع العربية: حدّ الكلمة بنظرة أمامية على الحروف فقط (الفاصلة العربية ليست حرفًا)
 const scrubAmounts = s => s == null ? s : String(s).replace(AMT, '—');
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
-const KINDS = { rec: ['REC', 'سند استلام', 'Receipt note'], dlv: ['DLV', 'سند تسليم', 'Delivery note'], mov: ['MOV', 'سجل الحركة', 'Movement log'], trf: ['TRF', 'سند نقل داخلي', 'Internal transfer note'] };
+const KINDS = { rec: ['REC', 'سند استلام', 'Receipt note'], dlv: ['DLV', 'سند تسليم', 'Delivery note'], mov: ['MOV', 'سجل الحركة', 'Movement log'], trf: ['TRF', 'سند نقل داخلي', 'Internal transfer note'], xrc: ['XRC', 'سند استلام بن عميل', 'Customer coffee receipt'], xdl: ['XDL', 'سند تسليم بن محمّص', 'Roasted coffee delivery note'] };
 const locName = (k, lang) => DALU.locName(k, lang === 'en');
 // الرقم التالي: يعدّل doc في مكانه ويرجع الرقم
 function docNext(doc, kind, at) {
@@ -31,7 +31,7 @@ function docNext(doc, kind, at) {
 }
 const DOCS_CAP = 2000;
 // معاملات كل نوع مستند كما تُحفظ في الفهرس: حقول معروفة، نصوص قصيرة، لا شيء آخر من طلب العميل
-const PARAMS = { mov: ['from', 'to', 'item', 'sup', 'supName', 'cust', 'custName', 'loc'], rec: ['move', 'inv'], dlv: ['move', 'moves'], trf: ['move'] };
+const PARAMS = { mov: ['from', 'to', 'item', 'sup', 'supName', 'cust', 'custName', 'loc'], rec: ['move', 'inv'], dlv: ['move', 'moves'], trf: ['move'], xrc: ['x'], xdl: ['x'] };
 function pickParams(kind, p) { const out = {}; p = p && typeof p === 'object' ? p : {}; for (const k of PARAMS[kind] || []) { const v = p[k]; if (v == null || v === '') continue; out[k] = k === 'moves' ? (Array.isArray(v) ? v.slice(0, 50).map(x => String(x).slice(0, 40)) : []) : String(v).slice(0, 80); } return out; }
 // يضيف مستندًا للفهرس: {no, kind, at, by, params, ref, title}
 function docAdd(doc, kind, params, who, at, ref) {
@@ -87,7 +87,13 @@ function buildDlv(params, D, lang) {
     items: recs.map(m => { const it = (D.items || []).find(i => i.s === m.s); const lots = (m.alloc || []).map(a => { const l = lotOf(a.lot); return l ? (l.batch ? (lang === 'en' ? 'roasted ' : 'تحميص ') : supName(l.sup, lang) + ' ') + fmtDay(l.at, lang).date + ' · ' + num(a.n) : a.lot; });
       return { item: nameOf(m.s, D.items, D.pending_items, lang), origin: it ? (lang === 'en' ? it.en : it.ar) : m.s, cat: it ? it.c : '', lines: linesTxt(m, lang), tot: num(m.tot) + ' ' + uname(m.base, lang), lots: lots.join(' / '), un: m.un ? num(m.un) : '' }; }) };
 }
-function build(kind, params, D, lang) { if (kind === 'mov') return buildMov(params, D, lang); if (kind === 'rec') return buildRec(params, D, lang); if (kind === 'dlv') return buildDlv(params, D, lang); if (kind === 'trf') return buildTrf(params, D, lang); throw new Error('kind'); }
+// سندا تحميص العملاء: استلام بن أخضر من العميل (xrc) أو تسليم محمّص له (xdl) — سجل واحد {x} من live/roast_ext، مع رصيده بعد الحركة (بلا أسعار أبداً)
+function buildX(kind, params, D, lang) {
+  const XR = require('./xroast'); const doc = XR.normalize(D.roast_ext || {}); const x = params.x && doc.list.find(y => y.id === params.x && y.t === (kind === 'xrc' ? 'in' : 'out')); if (!x) throw new Error('nf');
+  const f = fmtDay(x.at, lang); const upTo = Object.assign({}, doc, { list: doc.list.filter(y => y.at <= x.at) }); const B = XR.balances(upTo, x.cust.id); const F = (B && B.coffees[x.coffee]) || { green: 0, roasted: 0 };
+  return { kind, at: x.at, date: f.date, day: f.day, time: f.time, customer: x.cust.name, coffee: x.coffee, kg: num(kind === 'xrc' ? x.g : x.kg), packs: kind === 'xrc' ? (x.sacks ? num(x.sacks) : '') : (x.bags ? num(x.bags) : ''), by: x.by || '', note: x.n || '', over: x.over ? num(x.over) : '', green: num(F.green), roasted: num(F.roasted) };
+}
+function build(kind, params, D, lang) { if (kind === 'mov') return buildMov(params, D, lang); if (kind === 'rec') return buildRec(params, D, lang); if (kind === 'dlv') return buildDlv(params, D, lang); if (kind === 'trf') return buildTrf(params, D, lang); if (kind === 'xrc' || kind === 'xdl') return buildX(kind, params, D, lang); throw new Error('kind'); }
 /* ---------- التوقيع الإلكتروني ----------
    يُحفظ على سجل المستند في live/docs_out: sigs:[{role, name, png (base64 بلا بادئة), at, by, ua, hash}] حيث hash = sha256(docNo + role + name + at + png).
    الأدوار: سند استلام rcv «المستلم (دال)» و sup «مندوب المورد»؛ سند تسليم dlv «المسلّم (دال)» و cust «المستلم (العميل)»؛ سند نقل داخلي snd «المسلّم» و rcv «المستلم»؛ appr «اعتماد» للمالك فقط على أي مستند.
@@ -106,10 +112,11 @@ function docsSeed(legacy, year) { const L = legacy || {}; const seq = {}; for (c
 function docsMerge(st, legacy) { const seen = new Set(((st && st.items) || []).map(x => x.no)); return ((st && st.items) || []).concat(((legacy && legacy.items) || []).filter(x => !seen.has(x.no))).sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))); }
 const docsFind = (st, legacy, no) => ((st && st.items) || []).find(x => x.no === no) || ((legacy && legacy.items) || []).find(x => x.no === no) || null;
 const crypto = require('crypto');
-const SIG_ROLES = { rec: ['rcv', 'sup', 'appr'], dlv: ['dlv', 'cust', 'appr'], trf: ['snd', 'rcv', 'appr'], mov: ['appr'] }, OWNER_ROLES = ['appr'], OWN_ROLE = { rec: 'rcv', dlv: 'dlv', trf: 'snd' }, STAFF_ROLES = ['rcv', 'dlv', 'snd'];   // دور الموظف نفسه لكل نوع: الاسم من حساب الدخول دائمًا، لا من الطلب
+const SIG_ROLES = { rec: ['rcv', 'sup', 'appr'], dlv: ['dlv', 'cust', 'appr'], trf: ['snd', 'rcv', 'appr'], mov: ['appr'], xrc: ['rcv', 'cust', 'appr'], xdl: ['dlv', 'cust', 'appr'] }, OWNER_ROLES = ['appr'], OWN_ROLE = { rec: 'rcv', dlv: 'dlv', trf: 'snd', xrc: 'rcv', xdl: 'dlv' }, STAFF_ROLES = ['rcv', 'dlv', 'snd'];   // دور الموظف نفسه لكل نوع: الاسم من حساب الدخول دائمًا، لا من الطلب
 const SIG_LABEL = { rcv: ['المستلم (دال)', 'Received by (Dal)'], sup: ['مندوب المورد', 'Supplier representative'], dlv: ['المسلّم (دال)', 'Delivered by (Dal)'], cust: ['المستلم (العميل)', 'Received by (customer)'], snd: ['المسلّم', 'Handed over by'], appr: ['اعتماد المالك', 'Owner approval'] };
 const TRF_LABEL = { rcv: ['المستلم', 'Received by'] };   // في سند النقل «المستلم» موظف دال في الموقع الآخر، لا «(دال)» ولا عميل
-const sigLabel = (role, lang, kind) => ((kind === 'trf' && TRF_LABEL[role]) || SIG_LABEL[role] || [role, role])[lang === 'en' ? 1 : 0];
+const XRC_LABEL = { cust: ['مندوب العميل (المسلّم)', 'Customer representative (handed over)'] };   // في استلام بن العميل: العميل هو المسلّم
+const sigLabel = (role, lang, kind) => ((kind === 'trf' && TRF_LABEL[role]) || (kind === 'xrc' && XRC_LABEL[role]) || SIG_LABEL[role] || [role, role])[lang === 'en' ? 1 : 0];
 const PNG_MAX = 40 * 1024;   // طول سلسلة data URL كاملة
 // يتحقق من صورة التوقيع: data:image/png;base64 صالحة ≤ 40 كيلوبايت وترويسة PNG حقيقية؛ يرجع base64 بلا بادئة
 function sigPng(v) {
@@ -188,6 +195,14 @@ function html(doc, meta, lang) {
       `<table><thead><tr><th>#</th><th>${L(lang, 'الصنف', 'Item')}</th><th>${L(lang, 'الكمية بوحداتها', 'Quantity in units')}</th><th>${L(lang, 'الإجمالي بالوحدة الأساسية', 'Total in base unit')}</th><th>${L(lang, 'الدفعة', 'Lot / batch')}</th></tr></thead><tbody>${doc.items.map((it, i) => `<tr><td class="n">${i + 1}</td><td>${esc(it.item)}<div class="mut" dir="ltr">DAL:${esc(it.sku)}</div></td><td class="n">${esc(it.lines)}</td><td class="n">${esc(it.tot)}</td><td class="n mut">${esc(it.lots || '—')}${it.un ? ' · ' + L(lang, 'بلا دفعة', 'no lot') + ' ' + esc(it.un) : ''}</td></tr>`).join('')}</tbody></table>` +
       (doc.short ? `<div class="warn">${L(lang, 'رصيد الموقع المصدر لم يغطِّ الكمية، النقص: ', 'The source location did not cover the quantity; shortfall: ')}${esc(doc.short)}</div>` : '') +
       sigGrid(['snd', 'rcv']);
+  } else if (doc.kind === 'xrc' || doc.kind === 'xdl') {
+    const rc = doc.kind === 'xrc';
+    body = `<div class="kv"><div><span>${L(lang, 'العميل', 'Customer')}</span><b>${esc(doc.customer)}</b></div><div><span>${rc ? L(lang, 'تاريخ الاستلام', 'Received on') : L(lang, 'تاريخ التسليم', 'Delivered on')}</span><b>${esc(doc.day + ' ' + doc.date)} · ${doc.time}</b></div><div><span>${L(lang, 'المحصول', 'Coffee')}</span><b>${esc(doc.coffee)}</b></div><div><span>${rc ? L(lang, 'استلمه', 'Received by') : L(lang, 'سلّمه', 'Delivered by')}</span><b>${esc(doc.by)}</b></div>${doc.note ? `<div><span>${L(lang, 'ملاحظة', 'Note')}</span><b>${esc(doc.note)}</b></div>` : ''}</div>` +
+      `<table><thead><tr><th>#</th><th>${L(lang, 'البيان', 'Description')}</th><th>${L(lang, 'الوزن (كجم)', 'Weight (kg)')}</th><th>${rc ? L(lang, 'عدد الخيش', 'Sacks') : L(lang, 'عدد الأكياس', 'Bags')}</th></tr></thead><tbody><tr><td class="n">1</td><td>${rc ? L(lang, 'بن أخضر من العميل للتحميص', 'Green coffee from the customer, for roasting') : L(lang, 'بن محمّص من بن العميل نفسه', "Roasted coffee from the customer's own beans")} · ${esc(doc.coffee)}</td><td class="n ${rc ? 'in' : 'out'}">${esc(doc.kg)}</td><td class="n">${esc(doc.packs || '—')}</td></tr></tbody></table>` +
+      `<div class="kv"><div><span>${L(lang, 'أخضر للعميل عندنا بعد هذه الحركة', 'Customer green held by us after this')}</span><b>${esc(doc.green)} ${L(lang, 'كجم', 'kg')}</b></div><div><span>${L(lang, 'محمّص جاهز له عندنا بعدها', 'Roasted ready for them after this')}</span><b>${esc(doc.roasted)} ${L(lang, 'كجم', 'kg')}</b></div></div>` +
+      (doc.over ? `<div class="warn">${rc ? '' : L(lang, 'الكمية المسلّمة أكثر من المحمّص المسجّل له بـ ', 'Delivered quantity exceeds the roasted coffee recorded for them by ') + esc(doc.over) + ' ' + L(lang, 'كجم', 'kg')}</div>` : '') +
+      `<p class="mut" style="font-size:9.5pt">${L(lang, 'بن العميل لا يختلط ببن دال ولا يدخل في مخزونها. الأوزان بالكيلو كما وُزنت عند الاستلام/التسليم.', "The customer's coffee is kept apart from Dal's own stock. Weights in kg as weighed at handover.")}</p>` +
+      sigGrid(rc ? ['rcv', 'cust'] : ['dlv', 'cust']);
   }
   return head + hd + body + ft + '</body></html>';
 }

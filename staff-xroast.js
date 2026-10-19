@@ -1,0 +1,125 @@
+/* تحميص العملاء (v1) — سلو والعملاء الذين يحضرون بنّهم. ثلاث حركات: استلام أخضر من العميل، دفعة تحميص، تسليم محمّص له.
+   الاستلام والتسليم يأخذان سنداً مرقّماً (XRC / XDL) يُطبع ويُوقَّع على الجوال. الأرصدة لكل عميل ومحصول: أخضر عندنا، محمّص جاهز.
+   لا أسعار ولا أجور هنا أبداً. البيانات: live/roast_ext عبر /staff/xroast، والسندات في live/docs_out. */
+(function () {
+  const X = window.DALX = { seg: 'add', cust: '', t: 'in', coffee: '', g: '', r: '', kg: '', sacks: '', bags: '', n: '', newc: '', busy: false, sign: null, pads: {}, bal: '' };
+  const EN = () => window.DALLANG && window.DALLANG() === 'en';
+  const T = (ar, en) => window.DALT ? window.DALT(ar, en) : ar;
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const num = v => { const x = parseFloat(String(v).replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(',', '.')); return isFinite(x) ? x : null; };
+  const f1 = v => v == null ? '—' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  const ksa = d => new Date(new Date(d).getTime() + 3 * 3600e3); const day = d => ksa(d).toISOString().slice(0, 10); const hm = d => ksa(d).toISOString().slice(11, 16);
+  const MN = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'], MNE = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dName = s => { const today = day(Date.now()), y = day(Date.now() - 864e5); if (s === today) return T('اليوم', 'Today'); if (s === y) return T('أمس', 'Yesterday'); const [Y, M, D] = s.split('-'); return +D + ' ' + (EN() ? MNE[+M - 1] : MN[+M - 1]) + (Y !== today.slice(0, 4) ? ' ' + Y : ''); };
+  const doc = () => window.DALD().roast_ext || { custs: [], list: [] };
+  const custs = () => (doc().custs || []);
+  const list = () => (doc().list || []);
+  const docs = () => ((window.DALD().docs_out || {}).items || []).filter(d => d.kind === 'xrc' || d.kind === 'xdl');
+  const rr = () => window.DALRENDER();
+  const TT = { in: ['استلام أخضر', 'Green received'], roast: ['دفعة تحميص', 'Roast batch'], out: ['تسليم محمّص', 'Roasted delivered'] };
+  const KL = { xrc: ['سند استلام بن عميل', 'Customer coffee receipt'], xdl: ['سند تسليم بن محمّص', 'Roasted delivery note'] };
+  const ROLES = { xrc: ['rcv', 'cust'], xdl: ['dlv', 'cust'] };
+  const rl = (role, kind) => role === 'rcv' ? T('المستلم (دال)', 'Received by (Dal)') : role === 'dlv' ? T('المسلّم (دال)', 'Delivered by (Dal)') : kind === 'xrc' ? T('مندوب العميل (المسلّم)', 'Customer representative') : T('المستلم (العميل)', 'Received by (customer)');
+  const SV = { customer: ['اختر العميل', 'Choose the customer'], coffee: ['اكتب اسم المحصول', 'Enter the coffee name'], weight: ['تأكد من الأوزان', 'Check the weights'], today: ['الحذف لحركات اليوم فقط', "Only today's entries can be deleted"], signed: ['السند موقّع، لا يُحذف', 'The note is signed and cannot be deleted'], forbidden: ['ليس لديك صلاحية', 'Not allowed'] };
+  const svErr = m => SV[m] ? T(SV[m][0], SV[m][1]) : (m || T('تعذّر', 'Failed'));
+  // الأرصدة من السجل (نفس حساب الخادم): لكل عميل ← لكل محصول
+  function balances(cid) { const out = {}; for (const x of list()) { if (!x.cust || (cid && x.cust.id !== cid)) continue; const C = out[x.cust.id] = out[x.cust.id] || { name: x.cust.name, coffees: {}, green: 0, roasted: 0, made: 0, out: 0, n: 0 }; const k = x.coffee || '—'; const F = C.coffees[k] = C.coffees[k] || { green: 0, roasted: 0, made: 0, out: 0 }; const add = (f, v) => { C[f] += v; F[f] += v; };
+      if (x.t === 'in') add('green', +x.g || 0); else if (x.t === 'roast') { add('green', -(+x.g || 0)); add('roasted', +x.r || 0); add('made', +x.r || 0); } else if (x.t === 'out') { add('roasted', -(+x.kg || 0)); add('out', +x.kg || 0); } C.n++; } return cid ? out[cid] : out; }
+  const coffeesOf = cid => { const s = []; for (const x of list()) if ((!cid || (x.cust && x.cust.id === cid)) && x.coffee && !s.includes(x.coffee)) s.push(x.coffee); return s; };
+  const loss = (g, r) => g > 0 && r != null && r >= 0 ? (g - r) / g * 100 : null; const odd = p => p != null && (p < 10 || p > 22);
+
+  const CSS = `<style id="xr-css">
+  .xr-seg{display:flex;background:var(--fill);border-radius:9px;padding:2px;margin:4px 0 12px}.xr-seg button{flex:1;border:0;background:transparent;min-height:40px;border-radius:7px;font-size:15px;color:var(--ink2);cursor:pointer}.xr-seg button[aria-pressed=true]{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+  .xr-f{background:#fff;border-radius:12px;padding:12px 16px;margin-bottom:12px}.xr-f label{display:block;font-size:13px;color:var(--ink2);margin:8px 0 0}
+  .xr-two{display:grid;grid-template-columns:1fr 1fr;gap:10px}.xr-two input{font-size:22px;font-weight:600;text-align:center}
+  .xr-ls{display:flex;align-items:center;justify-content:space-between;background:var(--fill);border-radius:10px;padding:10px 12px;margin-top:8px;min-height:48px}.xr-ls small{color:var(--ink2);font-size:14px}.xr-ls b{font-size:22px;font-weight:600}.xr-ls.w{background:var(--warn-soft)}.xr-ls.w small,.xr-ls.w b{color:var(--warn)}
+  .xr-ty{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:6px 0 2px}.xr-ty button{border:1px solid var(--line,#ddd);background:#fff;border-radius:10px;min-height:46px;font-size:14px;color:var(--ink);cursor:pointer}.xr-ty button[aria-pressed=true]{border-color:var(--ink);background:var(--ink);color:#fff}
+  .xr-it .tm{font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--ink2);width:44px;flex:none}.xr-x{border:0;background:transparent;color:var(--ink3);width:44px;height:44px;cursor:pointer;display:grid;place-items:center;flex:none;margin-inline-end:-10px}
+  .xr-tag{font-size:12px;border-radius:6px;padding:1px 6px;margin-inline-start:4px;font-weight:600}.xr-tag.in{background:#e3f3e8;color:#1f6b4a}.xr-tag.roast{background:var(--fill);color:var(--ink2)}.xr-tag.out{background:#fdecec;color:#b42318}.xr-tag.over{background:var(--warn-soft);color:var(--warn)}
+  .xr-b{background:#fff;border-radius:12px;padding:10px 16px;margin-bottom:10px}.xr-b h3{margin:0 0 4px;font-size:16px;font-weight:600}.xr-b .row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--fill);font-size:14px}.xr-b .row b{font-weight:600}.xr-b .row small{color:var(--ink2)}
+  .xr-new{display:flex;gap:8px;margin-top:6px}.xr-new input{flex:1}.xr-new button{flex:none}
+  .xr-pdf{flex:none;border:1px solid var(--line,#ddd);background:#fff;color:var(--acc-ink,#b4500f);border-radius:8px;min-height:34px;padding:0 10px;font-size:13px;font-weight:600;cursor:pointer;margin-inline-start:6px}
+  </style>`;
+
+  X.view = function (can) {
+    const edit = can('roastx', 'edit');
+    if (X.sign) return CSS + vSign();
+    const segs = [['add', T('سجّل', 'Record')], ['bal', T('الأرصدة', 'Balances')], ['docs', T('المستندات', 'Documents')]];
+    return CSS + `<h1>${T('تحميص العملاء', 'Customer roasting')}</h1><p class="note">${T('بن سلو والعملاء الذين يحضرون بنّهم: استلم الأخضر، سجّل كل دفعة تحميص، وسلّم المحمّص. منفصل تماماً عن بن دال.', "Coffee from SLOW and customers who bring their own beans: receive the green, log every roast batch, hand over the roasted coffee. Kept completely apart from Dal's coffee.")}</p>
+    <div class="xr-seg" role="tablist">${segs.map(s => `<button role="tab" data-xs="${s[0]}" aria-pressed="${X.seg === s[0]}">${s[1]}</button>`).join('')}</div>
+    ${X.seg === 'bal' ? vBal() : X.seg === 'docs' ? vDocs() : vAdd(edit)}`;
+  };
+  function custChips() { const C = custs(); return `<label>${T('العميل', 'Customer')}</label><div class="chips" style="padding-top:4px">${C.map(c => `<button data-xc="${esc(c.id)}" aria-pressed="${X.cust === c.id}"><bdi class="d">${esc(c.name)}</bdi></button>`).join('')}<button data-xc="+" aria-pressed="${X.cust === '+'}">+ ${T('عميل جديد', 'New customer')}</button></div>${X.cust === '+' ? `<div class="xr-new"><input id="xr-newc" value="${esc(X.newc)}" placeholder="${T('اسم العميل', 'Customer name')}"><button class="btn s" data-xa="newc" ${X.busy ? 'disabled' : ''}>${T('أضف', 'Add')}</button></div>` : ''}`; }
+  function vAdd(edit) {
+    const today = day(Date.now()); const L = list(); const td = L.filter(x => day(x.at) === today);
+    const form = !edit ? `<p class="note">${T('صلاحيتك للعرض فقط.', 'View only.')}</p>` : (() => {
+      const B = X.cust && X.cust !== '+' ? balances(X.cust) : null; const F = B && X.coffee ? B.coffees[X.coffee] : null; const p = loss(num(X.g), num(X.r));
+      const cf = coffeesOf(X.cust && X.cust !== '+' ? X.cust : '');
+      const balLine = `<div id="xr-bal">` + (F ? `<div class="xr-ls"><small>${T('أخضر عندنا', 'Green with us')} <b style="font-size:16px">${f1(F.green)}</b> ${T('كجم', 'kg')}</small><small>${T('محمّص جاهز', 'Roasted ready')} <b style="font-size:16px">${f1(F.roasted)}</b> ${T('كجم', 'kg')}</small></div>` : '') + '</div>';
+      return `<div class="xr-f">${custChips()}
+      <label>${T('الحركة', 'Action')}</label><div class="xr-ty">${['in', 'roast', 'out'].map(t => `<button data-xt="${t}" aria-pressed="${X.t === t}">${T(TT[t][0], TT[t][1])}</button>`).join('')}</div>
+      <label for="xr-cf">${T('المحصول', 'Coffee')}</label><input id="xr-cf" list="xr-cfl" value="${esc(X.coffee)}" placeholder="${T('مثلاً: كولومبي', 'e.g. Colombia')}"><datalist id="xr-cfl">${cf.map(c => `<option value="${esc(c)}">`).join('')}</datalist>${balLine}
+      ${X.t === 'roast' ? `<div class="xr-two"><div><label for="xr-g">${T('الأخضر (كجم)', 'Green (kg)')}</label><input id="xr-g" inputmode="decimal" value="${esc(X.g)}" placeholder="0"></div><div><label for="xr-r">${T('المحمّص (كجم)', 'Roasted (kg)')}</label><input id="xr-r" inputmode="decimal" value="${esc(X.r)}" placeholder="0"></div></div><div class="xr-ls ${odd(p) ? 'w' : ''}" id="xr-ls"><small>${odd(p) ? T('الفاقد غير معتاد، تأكد من الوزن', 'Unusual loss. Check the weights.') : T('الفاقد', 'Weight loss')}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b></div>`
+        : X.t === 'in' ? `<div class="xr-two"><div><label for="xr-g">${T('الوزن (كجم)', 'Weight (kg)')}</label><input id="xr-g" inputmode="decimal" value="${esc(X.g)}" placeholder="0"></div><div><label for="xr-sacks">${T('عدد الخيش', 'Sacks')}</label><input id="xr-sacks" inputmode="numeric" value="${esc(X.sacks)}" placeholder="—"></div></div>`
+        : `<div class="xr-two"><div><label for="xr-kg">${T('الوزن المسلّم (كجم)', 'Delivered (kg)')}</label><input id="xr-kg" inputmode="decimal" value="${esc(X.kg)}" placeholder="0"></div><div><label for="xr-bags">${T('عدد الأكياس', 'Bags')}</label><input id="xr-bags" inputmode="numeric" value="${esc(X.bags)}" placeholder="—"></div></div>`}
+      <label for="xr-n">${T('ملاحظة (اختياري)', 'Note (optional)')}</label><input id="xr-n" value="${esc(X.n)}" placeholder="${T('درجة التحميص أو أي ملاحظة', 'Roast level or any note')}">
+      <button class="btn" data-xa="add" ${X.busy ? 'disabled' : ''}>${X.t === 'in' ? T('سجّل الاستلام', 'Record receipt') : X.t === 'roast' ? T('سجّل الدفعة', 'Log batch') : T('سجّل التسليم', 'Record delivery')}</button>
+      <small style="display:block;text-align:center;color:var(--ink2);margin-top:6px;font-size:13px">${X.t === 'roast' ? T('الوقت واسمك يتسجلان تلقائياً', 'Time and your name are saved automatically') : T('يصدر سند مرقّم يُطبع ويُوقَّع على جوالك', 'A numbered note is issued; print it or sign on your phone')}</small></div>`; })();
+    const groups = {}; L.slice(0, 150).forEach(x => { (groups[day(x.at)] = groups[day(x.at)] || []).push(x); });
+    const rows = Object.keys(groups).sort().reverse().slice(0, 14).map(d => `<div class="sec">${dName(d)}</div><div class="grp">` + groups[d].map(x => { const lp = x.t === 'roast' ? loss(+x.g, +x.r) : null; const q = x.t === 'roast' ? f1(x.g) + ' ' + T('←', '→') + ' ' + f1(x.r) : f1(x.t === 'in' ? x.g : x.kg); const pk = x.t === 'in' && x.sacks ? ' · ' + x.sacks + ' ' + T('خيش', 'sacks') : x.t === 'out' && x.bags ? ' · ' + x.bags + ' ' + T('كيس', 'bags') : '';
+      return `<div class="cell xr-it"><span class="tm">${hm(x.at)}</span><div class="t"><b><bdi class="d">${esc(x.cust ? x.cust.name : '')}</bdi><span class="xr-tag ${x.t}">${T(TT[x.t][0], TT[x.t][1])}</span>${x.over ? `<span class="xr-tag over">${T('زيادة', 'over')} ${f1(x.over)}</span>` : ''}</b><small><span class="d">${esc(x.coffee)}</span> · ${q} ${T('كجم', 'kg')}${pk} · <span class="d">${esc(x.by || '')}</span>${x.doc ? ' · <bdi dir="ltr">' + esc(x.doc) + '</bdi>' : ''}${x.n ? ' · <span class="d">' + esc(x.n) + '</span>' : ''}</small></div>${lp != null ? `<div class="v"><b style="${odd(lp) ? 'color:var(--warn)' : ''}">${lp.toFixed(1)}%</b></div>` : x.doc ? `<button class="xr-pdf" data-xdoc="${esc(x.doc)}">PDF</button>` : ''}${edit && day(x.at) === today ? `<button class="xr-x" data-xdel="${esc(x.id)}" aria-label="${T('حذف', 'Delete')}">${window.DALICO ? window.DALICO('x', 18) : '×'}</button>` : ''}</div>`; }).join('') + '</div>').join('');
+    const stats = `<div class="stats" style="grid-template-columns:repeat(3,1fr)"><div><b>${td.filter(x => x.t === 'roast').length}</b><small>${T('دفعات اليوم', 'Batches today')}</small></div><div><b>${f1(td.filter(x => x.t === 'roast').reduce((a, x) => a + (+x.r || 0), 0))}</b><small>${T('محمّص اليوم', 'Roasted today')}</small></div><div><b>${f1(td.filter(x => x.t === 'out').reduce((a, x) => a + (+x.kg || 0), 0))}</b><small>${T('سُلّم اليوم', 'Delivered today')}</small></div></div>`;
+    return form + stats + (rows || `<p class="note">${T('ما فيه حركات مسجّلة بعد.', 'Nothing recorded yet.')}</p>`);
+  }
+  function vBal() { const B = balances(); const ids = custs().map(c => c.id).filter(id => B[id]); if (!ids.length) return `<p class="note">${T('لا أرصدة بعد.', 'No balances yet.')}</p>`;
+    return ids.map(id => { const C = B[id]; return `<div class="xr-b"><h3><bdi class="d">${esc(C.name)}</bdi></h3>${Object.entries(C.coffees).map(([k, F]) => `<div class="row"><span><bdi class="d">${esc(k)}</bdi></span><span><small>${T('أخضر عندنا', 'Green with us')}</small> <b>${f1(F.green)}</b> <small>${T('كجم', 'kg')}</small> &nbsp; <small>${T('محمّص جاهز', 'Roasted ready')}</small> <b>${f1(F.roasted)}</b> <small>${T('كجم', 'kg')}</small></span></div>`).join('')}<div class="row" style="color:var(--ink2)"><span>${T('الإجمالي', 'Total')}</span><span><b>${f1(C.green)}</b> ${T('أخضر', 'green')} · <b>${f1(C.roasted)}</b> ${T('محمّص جاهز', 'roasted ready')} · ${T('حُمّص له', 'roasted for them')} ${f1(C.made)} · ${T('سُلّم', 'delivered')} ${f1(C.out)}</span></div></div>`; }).join('') + `<p class="note">${T('الأرصدة من السجل: الأخضر المستلم ناقص ما حُمّص؛ المحمّص ناقص ما سُلّم.', 'From the log: green received minus roasted; roasted minus delivered.')}</p>`; }
+  function vDocs() { const L = docs(); if (!L.length) return `<p class="note">${T('لا سندات بعد. يصدر سند مع كل استلام أو تسليم.', 'No notes yet. One is issued with every receipt or delivery.')}</p>`;
+    return `<div class="grp">${L.slice(0, 100).map(d => { const r = d.ref || {}; const n = (d.sigs || []).length; return `<div class="cell"><div class="t"><b><bdi dir="ltr">${esc(d.no)}</bdi> <span class="xr-tag ${d.kind === 'xrc' ? 'in' : 'out'}">${T(KL[d.kind][0], KL[d.kind][1])}</span></b><small><bdi class="d">${esc(r.name || '')}</bdi> · <span class="d">${esc(r.coffee || '')}</span> · ${dName(day(d.at))} ${hm(d.at)} · ${n ? T('موقّع', 'signed') + ' ' + n + '/2' : T('بلا توقيع', 'unsigned')}</small></div><button class="xr-pdf" data-xdoc="${esc(d.no)}">PDF</button>${n < 2 ? `<button class="xr-pdf" data-xsign="${esc(d.no)}">${T('توقيع', 'Sign')}</button>` : ''}</div>`; }).join('')}</div>`; }
+  /* ---------- التوقيع ---------- */
+  const docOf = no => docs().find(d => d.no === no);
+  function vSign() { const d = docOf(X.sign); if (!d) { X.sign = null; return ''; } const r = d.ref || {}; const done = ROLES[d.kind].every(x => (d.sigs || []).some(s => s.role === x)); setTimeout(mountPads, 0);
+    return `<h1>${T('توقيع', 'Signature')} <span dir="ltr" style="font-size:20px;color:var(--ink2)">${esc(d.no)}</span></h1><p class="note">${T(KL[d.kind][0], KL[d.kind][1])} · <bdi class="d">${esc(r.name || '')}</bdi> · <span class="d">${esc(r.coffee || '')}</span><br>${T('التوقيع اختياري. كل دور يوقّع مرة واحدة ثم يُقفل، ويُقفل السند بعد أول توقيع.', 'Signing is optional. Each role signs once and is then locked; the note locks after the first signature.')}</p>
+    <div data-xpad="${ROLES[d.kind][0]}"></div><div data-xpad="cust"></div><div class="err" id="xr-err"></div>
+    ${done ? '' : `<button class="btn" data-xa="signsave" ${X.busy ? 'disabled' : ''}>${T('احفظ التوقيع', 'Save signature')}</button>`}<button class="btn s" data-xdoc="${esc(d.no)}">${(d.sigs || []).length ? T('PDF موقّع', 'Signed PDF') : 'PDF'}</button><button class="btn g" data-xa="signx">${done ? T('رجوع', 'Back') : T('لاحقًا', 'Later')}</button>`; }
+  function mountPads() { const S = window.DALSIGN; if (!S || !X.sign) return; const d = docOf(X.sign); if (!d) return; const me = window.DALME ? (window.DALME() || {}).name : ''; const L = EN() ? 'en' : 'ar'; const r = d.ref || {};
+    document.querySelectorAll('[data-xpad]').forEach(el => { if (el.querySelector('.ds')) return; const role = el.getAttribute('data-xpad'); const s = (d.sigs || []).find(x => x.role === role); const mine = role !== 'cust'; const prev = X.pads[role];
+      X.pads[role] = S.create(el, { lang: L, role, title: rl(role, d.kind), sub: mine ? '' : T('يوقّع العميل أو مندوبه على جوالك', 'The customer or their representative signs on your phone'), name: mine ? me : null, namePlaceholder: T('اسم الموقّع', 'Signer’s name'), nameValue: prev && !prev.locked ? prev.name() : (role === 'cust' ? (r.name || '') : ''), strokes: prev && !prev.locked ? prev.strokes : null, signed: s ? { name: s.name, at: s.at, hash: s.hash, png: s.png } : null, dateText: s ? dName(day(s.at)) + ' ' + hm(s.at) : '' }); }); }
+  async function signSave() { const d = docOf(X.sign); if (!d) return; const err = document.getElementById('xr-err'); if (err) err.textContent = ''; const todo = [];
+    for (const role of ROLES[d.kind]) { const p = X.pads[role]; if (!p || p.locked || p.empty()) continue; const name = p.name(); if (!name) { if (err) err.textContent = T('اكتب اسم الموقّع: ', 'Enter the signer’s name: ') + rl(role, d.kind); return; } const png = await p.png(); if (!png) continue; todo.push({ role, name, png }); }
+    if (!todo.length) { if (err) err.textContent = T('لا توقيع بعد. وقّع في اللوحة أو اضغط «لاحقًا».', 'Nothing signed yet. Sign in the pad or tap “Later”.'); return; }
+    X.busy = true; rr();
+    try { for (const t of todo) { const r = await window.DALAPI('/staff/sign', { method: 'POST', body: JSON.stringify({ no: d.no, role: t.role, name: t.name, png: t.png }) }); if (!r.ok) throw new Error(r.err === 'dup' ? T('هذا الدور موقّع مسبقًا', 'This role is already signed') : svErr(r.err)); putDoc(r.doc); delete X.pads[t.role]; } window.DALTOAST(T('حُفظ التوقيع', 'Signature saved') + ' · ' + d.no); } catch (e) { window.DALTOAST(T('تعذّر حفظ التوقيع: ', 'Could not save the signature: ') + e.message); }
+    X.busy = false; rr(); }
+  function putDoc(item) { if (!item) return; const dd = window.DALD().docs_out || (window.DALD().docs_out = { items: [] }); const i = (dd.items || []).findIndex(x => x.no === item.no); if (i >= 0) dd.items[i] = item; else dd.items = [item].concat(dd.items || []); }
+  async function printDoc(no) { if (X.busy) return; X.busy = true; const w = window.open('about:blank', '_blank'); rr();
+    try { const r = await fetch((window.DALSRV || '') + '/staff/doc', { method: 'POST', headers: { 'content-type': 'application/json', Authorization: 'Bearer ' + (localStorage.getItem('dal-staff-tok') || '') }, body: JSON.stringify({ no, lang: EN() ? 'en' : 'ar' }) });
+      if (!r.ok) { let e = 'HTTP ' + r.status; try { e = (await r.json()).err || e; } catch (x) {} throw new Error(e); } const b = await r.blob(); const u = URL.createObjectURL(b); if (w && !w.closed) w.location = u; else { const a = document.createElement('a'); a.href = u; a.download = no + '.pdf'; a.click(); } window.DALTOAST(T('جاهز: ', 'Ready: ') + no); setTimeout(() => URL.revokeObjectURL(u), 120000); }
+    catch (e) { if (w && !w.closed) w.close(); window.DALTOAST(T('تعذّرت الطباعة: ', 'Could not print: ') + (e.message === 'Failed to fetch' ? T('لا اتصال بالخادم', 'Server unreachable') : e.message)); }
+    X.busy = false; rr(); }
+  /* ---------- الأحداث ---------- */
+  function upd() { const p = loss(num(X.g), num(X.r)); const el = document.getElementById('xr-ls'); if (!el || X.t !== 'roast') return; el.classList.toggle('w', odd(p)); el.innerHTML = `<small>${odd(p) ? T('الفاقد غير معتاد، تأكد من الوزن', 'Unusual loss. Check the weights.') : T('الفاقد', 'Weight loss')}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b>`; }
+  document.addEventListener('input', e => { const id = e.target.id; const k = { 'xr-g': 'g', 'xr-r': 'r', 'xr-kg': 'kg', 'xr-sacks': 'sacks', 'xr-bags': 'bags', 'xr-n': 'n', 'xr-newc': 'newc', 'xr-cf': 'coffee' }[id]; if (k) { X[k] = e.target.value; upd(); } });
+  function balLineHtml() { const B = X.cust && X.cust !== '+' ? balances(X.cust) : null; const F = B && X.coffee ? B.coffees[X.coffee] : null; return F ? `<div class="xr-ls"><small>${T('أخضر عندنا', 'Green with us')} <b style="font-size:16px">${f1(F.green)}</b> ${T('كجم', 'kg')}</small><small>${T('محمّص جاهز', 'Roasted ready')} <b style="font-size:16px">${f1(F.roasted)}</b> ${T('كجم', 'kg')}</small></div>` : ''; }
+  document.addEventListener('input', e => { if (e.target.id === 'xr-cf') { const el = document.getElementById('xr-bal'); if (el) el.innerHTML = balLineHtml(); } });
+  async function post(body) { const r = await window.DALAPI('/staff/xroast', { method: 'POST', body: JSON.stringify(body) }); if (!r.ok) throw new Error(svErr(r.err)); if (r.log) window.DALD().roast_ext = r.log; if (r.docs_out) window.DALD().docs_out = r.docs_out; return r; }
+  document.addEventListener('click', async e => {
+    if (!e.target.closest) return;
+    const sg = e.target.closest('[data-xs]'); if (sg) { X.seg = sg.getAttribute('data-xs'); rr(); return; }
+    const cc = e.target.closest('[data-xc]'); if (cc) { X.cust = cc.getAttribute('data-xc'); X.coffee = ''; rr(); return; }
+    const ty = e.target.closest('[data-xt]'); if (ty) { X.t = ty.getAttribute('data-xt'); rr(); return; }
+    const pd = e.target.closest('[data-xdoc]'); if (pd) { printDoc(pd.getAttribute('data-xdoc')); return; }
+    const sn = e.target.closest('[data-xsign]'); if (sn) { X.sign = sn.getAttribute('data-xsign'); X.pads = {}; rr(); window.scrollTo(0, 0); return; }
+    const dl = e.target.closest('[data-xdel]'); if (dl) { if (!confirm(T('حذف هذه الحركة؟', 'Delete this entry?'))) return; try { await post({ op: 'del', id: dl.getAttribute('data-xdel') }); rr(); window.DALTOAST(T('انحذفت', 'Deleted')); } catch (x) { window.DALTOAST(x.message); } return; }
+    const a = e.target.closest('[data-xa]'); if (!a || X.busy) return; const act = a.getAttribute('data-xa');
+    if (act === 'signsave') return signSave(); if (act === 'signx') { X.sign = null; X.pads = {}; rr(); return; }
+    if (act === 'newc') { const name = X.newc.trim(); if (!name) return window.DALTOAST(T('اكتب اسم العميل', 'Enter the customer name')); X.busy = true; rr(); try { const r = await post({ op: 'cust', name }); X.cust = r.cust.id; X.newc = ''; window.DALTOAST(T('أُضيف العميل', 'Customer added')); } catch (x) { window.DALTOAST(x.message); } X.busy = false; rr(); return; }
+    if (act === 'add') { if (!X.cust || X.cust === '+') return window.DALTOAST(T('اختر العميل', 'Choose the customer')); if (!X.coffee.trim()) return window.DALTOAST(T('اكتب اسم المحصول', 'Enter the coffee name'));
+      const g = num(X.g), r = num(X.r), kg = num(X.kg); if (X.t === 'in' && !(g > 0)) return window.DALTOAST(T('اكتب الوزن', 'Enter the weight')); if (X.t === 'roast' && (!(g > 0) || !(r > 0) || r > g)) return window.DALTOAST(T('وزن المحمّص لازم يكون أقل من الأخضر', 'Roasted weight must be less than green')); if (X.t === 'out' && !(kg > 0)) return window.DALTOAST(T('اكتب الوزن المسلّم', 'Enter the delivered weight'));
+      X.busy = true; rr();
+      try { const res = await post({ op: 'add', t: X.t, cust: X.cust, coffee: X.coffee.trim(), g, r, kg, sacks: num(X.sacks), bags: num(X.bags), n: X.n.trim() }); Object.assign(X, { g: '', r: '', kg: '', sacks: '', bags: '', n: '' });
+        window.DALTOAST((res.rec.over ? T('سُجّلت مع تنبيه زيادة ', 'Recorded with an over-quantity flag ') + f1(res.rec.over) + ' ' + T('كجم', 'kg') : T('انسجّلت', 'Recorded')) + (res.doc ? ' · ' + res.doc.no : ''));
+        if (res.doc) { X.sign = res.doc.no; X.pads = {}; window.scrollTo(0, 0); } }
+      catch (x) { window.DALTOAST(T('تعذّر الحفظ — ', 'Could not save — ') + x.message); }
+      X.busy = false; rr(); }
+  });
+})();
