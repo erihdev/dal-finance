@@ -209,7 +209,7 @@ document.addEventListener('change',async e=>{if(e.target.id==='fcam'||e.target.i
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='pin'){e.preventDefault();doLogin();}});
 let qt=null;document.addEventListener('input',e=>{if(e.target.id==='q'){q=e.target.value;clearTimeout(qt);qt=setTimeout(()=>{const el=$('#q');const pos=el.selectionStart;render();const n=$('#q');if(n){n.focus();n.setSelectionRange(pos,pos);}},250);}});
 /* صفحتا الجرد والتحميص تُحمَّلان عند فتحهما فقط */
-const MODS={units:['DALU','units-core.js?v=1'],cards:['DALCARDS','dal-cards.js?v=3'],sign:['DALSIGN','dal-sign.js?v=1'],count:['DALC','staff-count.js?v=9'],roast:['DALR','staff-roast.js?v=4'],move:['DALM','staff-move.js?v=4']};const MODP={};
+const MODS={units:['DALU','units-core.js?v=1'],cards:['DALCARDS','dal-cards.js?v=3'],sign:['DALSIGN','dal-sign.js?v=1'],count:['DALC','staff-count.js?v=10'],roast:['DALR','staff-roast.js?v=4'],move:['DALM','staff-move.js?v=4']};const MODP={};
 /* مفاتيح الوحدات (units-core) تُحمَّل قبل الجرد والتحميص والحركة؛ وصفحة الحركة تعتمد على الجرد (الكاميرا وقائمة الأصناف) */
 function needMod(k){const m=MODS[k];if(window[m[0]])return Promise.resolve();return MODP[k]=MODP[k]||(async()=>{if(k!=='units')await needMod('units');if(k==='move'||k==='roast')await needMod('count');if(k==='move'){await needMod('cards');await needMod('sign');}await new Promise((ok,no)=>{const s=document.createElement('script');s.src=m[1];s.onload=async()=>{try{if(k==='count'){await DALC.loadItems();if(can('count','view'))await DALC.load(api);else await DALC.loadUnits(api);}}catch(e){}ok();};s.onerror=()=>{delete MODP[k];s.remove();no();};document.head.appendChild(s);});})().catch(e=>{delete MODP[k];throw e;});}
 window.DALNEED=needMod;
