@@ -903,12 +903,12 @@ async function readFoodicsCounts() {
     for (const c of recent) {
       const id = c.id || c.reference; let items = [], tried = [];
       for (const u of ['/core-api/inventory_counts/' + id + '?include[]=items.inventory_item&include[]=creator', '/core-api/listing?url=/inventory_counts/' + id + '/items&include[]=inventory_item&with_total=true', '/core-api/listing?url=/inventory_count_items&filter[inventory_count_id]=' + id + '&include[]=inventory_item&with_total=true', '/core-api/inventory_counts/' + id]) {
-        const r = await G(u).catch(e => ({ s: 0 })); tried.push(u.replace(id, '<id>').split('?')[0] + ':' + r.s); if (r.s === 200 && r.j) { items = fcItems(r.j); if (items.length) { via = u.replace(id, '<id>'); break; } }
+        const r = await G(u).catch(e => ({ s: 0 })); const kk = j => !j ? '-' : (Array.isArray(j) ? 'arr' + j.length : Object.keys(j).join('|').slice(0, 60) + (j.data && typeof j.data === 'object' ? ' data:' + (Array.isArray(j.data) ? 'arr' + j.data.length + (j.data[0] ? '{' + Object.keys(j.data[0]).join('|').slice(0, 120) + '}' : '') : Object.keys(j.data).join('|').slice(0, 160)) : '')); tried.push(u.replace(id, '<id>').replace(/\?.*/, '') + ':' + r.s + ':' + kk(r.j)); if (r.s === 200 && r.j) { items = fcItems(r.j); if (items.length) { via = u.replace(id, '<id>'); break; } }
       }
       const who = c.creator || c.user || c.created_by || {}; const st = c.status != null ? c.status : (c.submitted_at ? 'submitted' : c.closed_at ? 'closed' : 'draft');
       out.list.push({ id, ref: c.reference || c.number || '', status: st, created_at: c.created_at || null, submitted_at: c.submitted_at || c.closed_at || null, by: who.name || who.full_name || '', branch: c.branch && c.branch.name || '', n: items.length, variances: items.filter(x => x.var).length, items: items.map(x => ({ name: x.name, sku: x.sku, unit: x.unit, counted: x.counted, orig: x.orig, var: x.var, cost: x.cost })), tried: items.length ? undefined : tried, keys: items[0] ? items[0].c : undefined });
     }
-    FC.probe = { via, keys: (out.list[0] && out.list[0].keys) || null, tried: (out.list[0] && out.list[0].tried) || null }; FC.at = out.at; FC.err = null;
+    FC.probe = Object.assign({}, FC.probe, { via, keys: (out.list[0] && out.list[0].keys) || null, tried: (out.list[0] && out.list[0].tried) || null }); FC.at = out.at; FC.err = null;
     if (GAS && KEY) await gas({ op: 'set', path: 'live/foodics_counts', data: Object.assign({ via }, out) }).catch(e => console.log('gas', e.message));
     const latest = out.list[0]; if (latest && latest.n && !FC.notified.includes(String(latest.id))) {   // جرد جديد (أول مرة نراه): إشعار واحد
       const top = latest.items.filter(x => x.var).sort((a, b) => Math.abs(b.var) - Math.abs(a.var)).slice(0, 3).map(x => x.name + ' ' + (x.var > 0 ? '+' : '') + x.var + (x.unit ? ' ' + x.unit : '')).join('، ');
