@@ -4,7 +4,7 @@
 'use strict';
 module.exports = function foodicsLive(d) {
   const { E, gas, getCtx } = d;
-  const EVERY = Math.max(60, +E.FX_SEC || 120) * 1000, ACC_EVERY = 10 * 60e3, BEAT = 10 * 60e3;
+  const EVERY = Math.max(30, +E.FX_SEC || 30) * 1000, ACC_EVERY = 10 * 60e3, BEAT = 10 * 60e3;
   const S = { at: null, wrote: null, accAt: 0, err: null, accErr: null, n: 0, busy: false, needLogin: false, last: null };
   const r2 = v => v == null || !isFinite(+v) ? null : Math.round(+v * 100) / 100;
   const ar = s => /[؀-ۿ]/.test(s || '');
