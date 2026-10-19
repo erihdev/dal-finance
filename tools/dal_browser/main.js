@@ -587,7 +587,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], sallaHook: Object.assign({ secret: !!E.SALLA_WEBHOOK_SECRET }, SWH), keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -597,6 +597,15 @@ const srv = http.createServer((req, res) => {
       } catch (e) { res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<meta charset=utf-8><body style="font-family:sans-serif;direction:rtl;text-align:center;padding:40px"><h2>تعذّر الربط</h2><p>' + String(e.message || e) + '</p></body>'); }
     })();
   }
+  if (req.method === 'POST' && req.url.startsWith('/salla/webhook')) {   // ويب هوك سلة الرسمي (تطبيق شركاء سلة): طلب جديد/محدَّث → جسر فودكس فوراً
+    let b = ''; req.on('data', c => { b += c; if (b.length > 1e6) req.destroy(); });
+    req.on('end', () => { try {
+      const sec = E.SALLA_WEBHOOK_SECRET || ''; const sig = String(req.headers['x-salla-signature'] || '');
+      if (sec) { const h = require('crypto').createHmac('sha256', sec).update(b).digest('hex'); if (!sig || sig.length !== h.length || !require('crypto').timingSafeEqual(Buffer.from(sig), Buffer.from(h))) { SWH.bad++; res.writeHead(401); return res.end(); } }
+      const j = JSON.parse(b || '{}'); const ev = String(j.event || '').slice(0, 60); SWH.n++; SWH.at = new Date().toISOString(); SWH.evs = SWH.evs.concat([ev]).slice(-10);
+      if (/^order\./.test(ev)) SF.schedule(3e3);
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}');
+    } catch (e) { res.writeHead(400); res.end(); } }); return; }
   if (req.url.startsWith('/foodics/callback') || req.url.startsWith('/foodics/webhook')) { SF.route(req, res, false).catch(() => { try { res.writeHead(500); res.end(); } catch (e) {} }); return; }   // عودة تفويض فودكس (عامة)
   if (req.url.startsWith('/salla/webhook')) {   // مستقبِل أحداث سلة (عام): نقبل ونخزّن آخر حدث
     let b = ''; req.on('data', c => { b += c; if (b.length > 2e6) req.destroy(); });
@@ -674,6 +683,7 @@ async function vncCheck() {
   if (!VNC.ws) { VNC.fixed++; spawn('websockify', ['--web', '/usr/share/novnc', '127.0.0.1:6080', '127.0.0.1:5900'], { detached: true, stdio: 'ignore' }).unref(); }
 }
 setTimeout(vncCheck, 20e3); setInterval(vncCheck, 60e3);
+const SWH = { n: 0, at: null, evs: [], bad: 0 };   // ويب هوك سلة
 const KEEP = require('./keepalive')({ E, getCtx: () => ctx, notify: notifyOwner, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // تبويب ثابت لكل منصة يُحدَّث كل 30 ثانية
 const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, getCtx: () => ctx, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // أرقام فودكس لحظية (الكونسول كل 30 ثانية، المحاسبي كل 10 دقائق)   // جسر سلة → فودكس
 
