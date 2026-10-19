@@ -670,7 +670,7 @@ const VNC = { vnc: null, ws: null, at: null, fixed: 0 };
 function portUp(port) { return new Promise(ok => { const c = require('net').connect(port, '127.0.0.1'); const t = setTimeout(() => { c.destroy(); ok(false); }, 2000); c.on('connect', () => { clearTimeout(t); c.end(); ok(true); }); c.on('error', () => { clearTimeout(t); ok(false); }); }); }
 async function vncCheck() {
   const { spawn } = require('child_process'); VNC.vnc = await portUp(5900); VNC.ws = await portUp(6080); VNC.at = new Date().toISOString();
-  if (!VNC.vnc) { VNC.fixed++; spawn('x11vnc', ['-display', ':99', '-localhost', '-forever', '-shared', '-nopw', '-quiet', '-rfbport', '5900', '-noxdamage', '-wait', '20', '-defer', '20'], { detached: true, stdio: 'ignore', env: Object.assign({}, process.env, { DISPLAY: ':99' }) }).unref(); }
+  if (!VNC.vnc) { VNC.fixed++; spawn('x11vnc', ['-display', ':99', '-localhost', '-forever', '-shared', '-nopw', '-quiet', '-rfbport', '5900', '-xkb', '-noxdamage', '-wait', '20', '-defer', '20'], { detached: true, stdio: 'ignore', env: Object.assign({}, process.env, { DISPLAY: ':99' }) }).unref(); }
   if (!VNC.ws) { VNC.fixed++; spawn('websockify', ['--web', '/usr/share/novnc', '127.0.0.1:6080', '127.0.0.1:5900'], { detached: true, stdio: 'ignore' }).unref(); }
 }
 setTimeout(vncCheck, 20e3); setInterval(vncCheck, 60e3);
