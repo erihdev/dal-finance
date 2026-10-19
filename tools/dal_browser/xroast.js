@@ -45,4 +45,12 @@ function apply(doc, j, who, now, opt) {
 }
 // نص سطر للسجل والإشعار (بلا أسعار)
 function describe(rec) { const c = rec.cust ? rec.cust.name : ''; return rec.t === 'in' ? 'استلام أخضر ' + c + ' · ' + rec.coffee + ' ' + rec.g + ' كجم' + (rec.sacks ? ' (' + rec.sacks + ' خيش)' : '') : rec.t === 'roast' ? 'تحميص ' + c + ' · ' + rec.coffee + ' ' + rec.g + '→' + rec.r + (rec.over ? ' (أكثر من الأخضر المسجّل بـ' + rec.over + ')' : '') : 'تسليم محمّص ' + c + ' · ' + rec.coffee + ' ' + rec.kg + ' كجم' + (rec.bags ? ' (' + rec.bags + ' كيس)' : '') + (rec.over ? ' (أكثر من الجاهز بـ' + rec.over + ')' : ''); }
-module.exports = { SLOW, normalize, balances, apply, describe, slug, dayKsa };
+// نسخة الفريق من طلبات واتساب: live/rt (قراءة القروب) مع تعديلات المالك في live/rt_state (s: تعديل بالمعرّف، add: إضافات، del: حذف) — الحقول المسموحة فقط، والملاحظة بلا مبالغ
+const MONEY = /سعر|أسعار|ريال|دفع|مدفوع|كاش|نقد|تحويل|حوال|فلوس|مبلغ|حساب|ايبان|iban|price|pay|paid|cash|sar\b/i;   // أي ملاحظة فيها كلام عن مال تُحذف كلها للفريق
+const scrub = s => s == null || MONEY.test(String(s)) ? '' : String(s).replace(/(?:\b(?:SAR|SR)\s*\d[\d,.]*|\d[\d,.]*\s*(?:SAR|SR|ريالاً|ريالات|ريال|ر\.س|هللات|هلل[ةه])(?![A-Za-z\u0621-\u064A])|(?:ريال|ر\.س)\s*\d[\d,.]*|\b\d{9,}\b)/gi, '—').slice(0, 160);
+function waStaff(rt, st) { const S = (st && st.s) || {}; const base = ((rt && rt.orders) || []).concat((st && st.add) || []); const seen = new Set();
+  const list = base.map(o => Object.assign({}, o, S[o.id] || {})).filter(o => o && o.id && !o.del && !seen.has(o.id) && seen.add(o.id)).map(o => ({ id: String(o.id), d: String(o.d || '').slice(0, 10), name: String(o.name || '').slice(0, 60), bean: String(o.bean || '').slice(0, 60), kg: o.kg == null || !isFinite(+o.kg) ? null : +o.kg, st: ['in', 'roast', 'out'].includes(o.st) ? o.st : 'in', note: scrub(o.note) }));
+  return { at: (rt && rt.at) || null, orders: list.slice(-200) }; }
+// نسخة الفريق من خيش سلو: المحصول والوزن والحالة والتاريخ فقط
+function slowStaff(slow) { return { at: (slow && slow.updated) || null, cards: ((slow && slow.cards) || []).map(c => ({ id: String(c.id), d: String(c.d || '').slice(0, 10), o: String(c.o || '').slice(0, 60), g: c.g == null || !isFinite(+c.g) ? null : +c.g, st: ['in', 'roast', 'out'].includes(c.st) ? c.st : 'in', note: scrub(c.note) })).slice(-200) }; }
+module.exports = { SLOW, normalize, balances, apply, describe, slug, dayKsa, waStaff, slowStaff, scrub };

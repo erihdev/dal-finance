@@ -428,7 +428,7 @@ async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BO
 // ===== بوابة الموظفين: حسابات برموز PIN وصلاحيات لكل صفحة (يشوف/يعدّل)، تُفرض هنا على الخادم لا في المتصفح =====
 const crypto2 = require('crypto');
 // صفحات الموظفين والمستندات التي تقرؤها كل صفحة. «move» (حركة المخزون) يحتاج الحركات والوحدات وآخر جرد للرصيد وفهرس الفواتير (مختصر) للاستلام
-const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state', 'units'], roastx: ['roast_ext', 'docs_out'], units: ['units', 'pending_items', 'alerts_stock'], move: ['moves', 'units', 'stock', 'count_state', 'invoices', 'suppliers', 'pending_items', 'alerts_stock', 'customers', 'docs_out', 'roast_log', 'staff_names'], roast: ['roast_log', 'stock', 'moves', 'units', 'docs_out'], _any: ['alerts_stock'] };
+const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state', 'units'], roastx: ['roast_ext', 'docs_out', 'rt', 'rt_state', 'slow'], units: ['units', 'pending_items', 'alerts_stock'], move: ['moves', 'units', 'stock', 'count_state', 'invoices', 'suppliers', 'pending_items', 'alerts_stock', 'customers', 'docs_out', 'roast_log', 'staff_names'], roast: ['roast_log', 'stock', 'moves', 'units', 'docs_out'], _any: ['alerts_stock'] };
 const DOCS = require('./docs'); const XR = require('./xroast');   // تحميص العملاء (سلو والعملاء الخارجيين)   // المستندات المطبوعة: سجل الحركة / سند استلام / سند تسليم (PDF مرقّم)
 // ===== مفاتيح الوحدات وحركة المخزون: الأساس مقفول على وحدة فودكس من count-items.json (نسخة مطابقة لملف التطبيق) =====
 const DALU = require('./units-core');
@@ -678,6 +678,9 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       // فهرس الفواتير لمن ليس عنده صفحة الفواتير (الاستلام في حركة المخزون): بلا مبالغ، فقط المورد والتاريخ والرقم ووصف الأصناف (مع حذف أي مبلغ ورد في الوصف)
       if (out.invoices && !can('invoices', 'view')) out.invoices = { items: (out.invoices.items || []).map(x => ({ id: x.id, at: x.at, date: x.date, supplier: x.supplier, invoice_no: x.invoice_no, items: DOCS.scrubAmounts(x.items), from: x.from, status: x.status })) };
       if (names.includes('roast_ext')) out.roast_ext = XR.normalize(out.roast_ext || {});   // تحميص العملاء: الهيكل الموحّد (العملاء + السجل)، بلا أسعار أصلاً
+      // طلبات واتساب (Roasting Tracking) وخيش سلو (DAL & SLOW) للفريق: الاسم والمحصول والوزن والحالة فقط — بلا جوال ولا سعر ولا دفع ولا أي مبلغ في الملاحظة
+      if (names.includes('rt') || names.includes('rt_state')) { out.rt = XR.waStaff(out.rt, out.rt_state); delete out.rt_state; }
+      if (names.includes('slow')) out.slow = XR.slowStaff(out.slow);
       if (out.suppliers) out.suppliers = { list: (out.suppliers.list || []).map(x => ({ id: x.id, name: x.name })) };   // أسماء الموردين فقط، بلا أسعار ولا فواتير
       if (out.docs_out) out.docs_out = Object.assign({}, out.docs_out, { items: (out.docs_out.items || []).filter(x => can('move', 'view') || x.kind === 'xrc' || x.kind === 'xdl').map(x => DOCS.sigStrip(x, null)) });   // بلا صلاحية الحركة: سندات العملاء فقط   // التواقيع: الأسماء والبصمات فقط، بلا صور (الصور في مخزن منفصل) وبلا النسخة المجمّدة
       if (out.stock) out.stock = Object.assign({}, out.stock, { items: (out.stock.items || []).map(x => ({ id: x.id, name: x.name, o: x.o, st: x.st, q: x.q, n: x.n })) });   // المحاصيل بلا أسعار شراء أو بيع (live/stock يحمل sell/buys للمالك)

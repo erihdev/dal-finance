@@ -15,6 +15,12 @@
   const custs = () => (doc().custs || []);
   const list = () => (doc().list || []);
   const docs = () => ((window.DALD().docs_out || {}).items || []).filter(d => d.kind === 'xrc' || d.kind === 'xdl');
+  // طلبات واتساب (Roasting Tracking) وخيش سلو (DAL & SLOW) كما يرسلها الخادم للفريق: اسم ومحصول ووزن وحالة فقط. «بانتظار» = لم يُسجَّل له استلام في التطبيق بعد
+  const waiting = () => { const L = list(); const got = (name, d, coffee) => L.some(x => x.t === 'in' && x.cust && norm(x.cust.name) === norm(name) && (!coffee || !x.coffee || norm(x.coffee) === norm(coffee)) && Math.abs(Date.parse(day(x.at)) - Date.parse(d || day(x.at))) < 7 * 864e5);
+    const rt = ((window.DALD().rt || {}).orders || []).filter(o => o.st !== 'out' && !got(o.name, o.d, o.bean)).map(o => ({ id: o.id, d: o.d, name: o.name, coffee: o.bean, kg: o.kg, st: o.st, note: o.note, src: 'rt' }));
+    const sl = ((window.DALD().slow || {}).cards || []).filter(c => c.st !== 'out' && !got('سلو', c.d, c.o)).map(c => ({ id: c.id, d: c.d, name: 'سلو', coffee: c.o, kg: c.g, st: c.st, note: c.note, src: 'slow' }));
+    return sl.concat(rt).sort((a, b) => String(b.d).localeCompare(String(a.d))); };
+  const norm = s => String(s || '').replace(/\s+/g, ' ').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').trim().toLowerCase();
   const rr = () => window.DALRENDER();
   const TT = { in: ['استلام أخضر', 'Green received'], roast: ['دفعة تحميص', 'Roast batch'], out: ['تسليم محمّص', 'Roasted delivered'] };
   const KL = { xrc: ['سند استلام بن عميل', 'Customer coffee receipt'], xdl: ['سند تسليم بن محمّص', 'Roasted delivery note'] };
@@ -37,6 +43,7 @@
   .xr-it .tm{font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--ink2);width:44px;flex:none}.xr-x{border:0;background:transparent;color:var(--ink3);width:44px;height:44px;cursor:pointer;display:grid;place-items:center;flex:none;margin-inline-end:-10px}
   .xr-tag{font-size:12px;border-radius:6px;padding:1px 6px;margin-inline-start:4px;font-weight:600}.xr-tag.in{background:#e3f3e8;color:#1f6b4a}.xr-tag.roast{background:var(--fill);color:var(--ink2)}.xr-tag.out{background:#fdecec;color:#b42318}.xr-tag.over{background:var(--warn-soft);color:var(--warn)}
   .xr-b{background:#fff;border-radius:12px;padding:10px 16px;margin-bottom:10px}.xr-b h3{margin:0 0 4px;font-size:16px;font-weight:600}.xr-b .row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--fill);font-size:14px}.xr-b .row b{font-weight:600}.xr-b .row small{color:var(--ink2)}
+  .xr-w{background:var(--warn-soft);border-radius:12px;padding:8px 12px;margin-bottom:12px}.xr-w b{display:block;font-size:14px;margin-bottom:4px}.xr-w button{display:flex;width:100%;justify-content:space-between;align-items:center;gap:8px;border:0;background:#fff;border-radius:10px;padding:9px 12px;margin-top:6px;font:inherit;font-size:14px;color:var(--ink);cursor:pointer;text-align:start}.xr-w button small{color:var(--ink2);font-size:12px}
   .xr-new{display:flex;gap:8px;margin-top:6px}.xr-new input{flex:1}.xr-new button{flex:none}
   .xr-pdf{flex:none;border:1px solid var(--line,#ddd);background:#fff;color:var(--acc-ink,#b4500f);border-radius:8px;min-height:34px;padding:0 10px;font-size:13px;font-weight:600;cursor:pointer;margin-inline-start:6px}
   </style>`;
@@ -52,7 +59,8 @@
   function custChips() { const C = custs(); return `<label>${T('العميل', 'Customer')}</label><div class="chips" style="padding-top:4px">${C.map(c => `<button data-xc="${esc(c.id)}" aria-pressed="${X.cust === c.id}"><bdi class="d">${esc(c.name)}</bdi></button>`).join('')}<button data-xc="+" aria-pressed="${X.cust === '+'}">+ ${T('عميل جديد', 'New customer')}</button></div>${X.cust === '+' ? `<div class="xr-new"><input id="xr-newc" value="${esc(X.newc)}" placeholder="${T('اسم العميل', 'Customer name')}"><button class="btn s" data-xa="newc" ${X.busy ? 'disabled' : ''}>${T('أضف', 'Add')}</button></div>` : ''}`; }
   function vAdd(edit) {
     const today = day(Date.now()); const L = list(); const td = L.filter(x => day(x.at) === today);
-    const form = !edit ? `<p class="note">${T('صلاحيتك للعرض فقط.', 'View only.')}</p>` : (() => {
+    const W = waiting(); const wait = W.length ? `<div class="xr-w"><b>${T('بانتظار الاستلام من واتساب', 'Waiting, from WhatsApp')} (${W.length})</b>${W.slice(0, 8).map(o => `<button data-xw="${esc(o.id)}" ${edit ? '' : 'disabled'}><span><bdi class="d">${esc(o.name)}</bdi> · <span class="d">${esc(o.coffee || '—')}</span>${o.note ? ' · <span class="d">' + esc(o.note) + '</span>' : ''}</span><small>${o.kg != null ? f1(o.kg) + ' ' + T('كجم', 'kg') : '—'}${o.d ? ' · ' + dName(o.d) : ''}</small></button>`).join('')}<small style="display:block;color:var(--ink2);font-size:12px;margin-top:6px">${T('اضغط الطلب لما يوصل البن: يتعبّى نموذج الاستلام وتتأكد من الوزن.', 'Tap an order when the coffee arrives: the receipt form is filled in; confirm the weight.')}</small></div>` : '';
+    const form = !edit ? wait + `<p class="note">${T('صلاحيتك للعرض فقط.', 'View only.')}</p>` : wait + (() => {
       const B = X.cust && X.cust !== '+' ? balances(X.cust) : null; const F = B && X.coffee ? B.coffees[X.coffee] : null; const p = loss(num(X.g), num(X.r));
       const cf = coffeesOf(X.cust && X.cust !== '+' ? X.cust : '');
       const balLine = `<div id="xr-bal">` + (F ? `<div class="xr-ls"><small>${T('أخضر عندنا', 'Green with us')} <b style="font-size:16px">${f1(F.green)}</b> ${T('كجم', 'kg')}</small><small>${T('محمّص جاهز', 'Roasted ready')} <b style="font-size:16px">${f1(F.roasted)}</b> ${T('كجم', 'kg')}</small></div>` : '') + '</div>';
@@ -107,6 +115,7 @@
     const sg = e.target.closest('[data-xs]'); if (sg) { X.seg = sg.getAttribute('data-xs'); rr(); return; }
     const cc = e.target.closest('[data-xc]'); if (cc) { X.cust = cc.getAttribute('data-xc'); X.coffee = ''; rr(); return; }
     const ty = e.target.closest('[data-xt]'); if (ty) { X.t = ty.getAttribute('data-xt'); rr(); return; }
+    const ww = e.target.closest('[data-xw]'); if (ww) { const o = waiting().find(x => x.id === ww.getAttribute('data-xw')); if (!o) return; const c = custs().find(k => norm(k.name) === norm(o.name)); if (c) X.cust = c.id; else { X.cust = '+'; X.newc = o.name; } X.t = 'in'; X.coffee = o.coffee || ''; X.g = o.kg != null ? String(o.kg) : ''; X.sacks = ''; rr(); window.scrollTo(0, 0); return; }
     const pd = e.target.closest('[data-xdoc]'); if (pd) { printDoc(pd.getAttribute('data-xdoc')); return; }
     const sn = e.target.closest('[data-xsign]'); if (sn) { X.sign = sn.getAttribute('data-xsign'); X.pads = {}; rr(); window.scrollTo(0, 0); return; }
     const dl = e.target.closest('[data-xdel]'); if (dl) { if (!confirm(T('حذف هذه الحركة؟', 'Delete this entry?'))) return; try { await post({ op: 'del', id: dl.getAttribute('data-xdel') }); rr(); window.DALTOAST(T('انحذفت', 'Deleted')); } catch (x) { window.DALTOAST(x.message); } return; }
