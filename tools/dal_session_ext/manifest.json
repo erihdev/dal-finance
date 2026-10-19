@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "دال — نقل الجلسات للمتصفح السحابي",
-  "version": "1.7",
-  "description": "ينقل جلسات الدخول (بدون كلمات مرور) لفودكس ورتم وبونات وعلو إلى متصفح دال السحابي بضغطة زر.",
+  "version": "2.0",
+  "description": "ينقل جلسات الدخول (بدون كلمات مرور) إلى متصفح دال السحابي: يدوياً بضغطة، وتلقائياً كل 30 دقيقة.",
   "permissions": [
+    "alarms",
     "cookies",
     "scripting",
     "storage",
@@ -25,5 +26,8 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "نقل الجلسات إلى دال"
+  },
+  "background": {
+    "service_worker": "background.js"
   }
 }
