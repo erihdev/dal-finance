@@ -1,8 +1,15 @@
-/* سجل التحميص — كل دفعة: المحصول، وزن الأخضر، وزن المحمّص، والفاقد يتحسب لحاله.
+/* سجل التحميص (v4) — كل دفعة: المحصول (رمز الأخضر في فودكس)، وزن الأخضر، وزن المحمّص، والفاقد يتحسب لحاله.
+   دفعة دال تحرّك المخزون على الخادم: سحب من دفعة الأخضر (الأقدم أو المختارة) وإضافة للمحمّص المقابل (الربط في units-core ROAST_MAP).
    الوقت والاسم يتسجلان تلقائياً. دفعات العملاء الخارجيين بنوع منفصل ولا تُحسب في بن دال.
-   الحفظ في live/roast_log عبر /staff/roast. */
+   الحفظ في live/roast_log (دال) و live/roast_ext (الخارجيين) عبر /staff/roast. */
 (function () {
-  const R = window.DALR = { t: 'dal', o: '', c: '', g: '', r: '', n: '', busy: false };
+  const R = window.DALR = { t: 'dal', o: '', c: '', g: '', r: '', n: '', lot: null, busy: false };
+  const U = () => window.DALU; const C = () => window.DALC;
+  // الأخضر من قائمة فودكس (الثمانية التي لها محمّص مقابل)، لا نص حر
+  const greens = () => ((C() && C().items) || []).filter(i => U() && U().ROAST_MAP[i.s]);
+  const lotsOf = s => (((window.DALD().moves || {}).list) || []).filter(x => x.t === 'in' && x.s === s && x.rem > 0).sort((a, b) => a.at.localeCompare(b.at));
+  const EN = () => window.DALLANG && window.DALLANG() === 'en';
+  const T = (ar, en) => window.DALT ? window.DALT(ar, en) : ar;
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const num = v => { const x = parseFloat(String(v).replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(',', '.')); return isFinite(x) ? x : null; };
   const f1 = v => v == null ? '—' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
@@ -11,26 +18,23 @@
   const ksa = d => new Date(new Date(d).getTime() + 3 * 3600e3);
   const day = d => ksa(d).toISOString().slice(0, 10);
   const hm = d => ksa(d).toISOString().slice(11, 16);
-  const MN = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
-  const dName = s => { const today = day(Date.now()), y = day(Date.now() - 864e5); if (s === today) return 'اليوم'; if (s === y) return 'أمس'; const [Y, M, D] = s.split('-'); return +D + ' ' + MN[+M - 1]; };
+  const dName = s => { const today = day(Date.now()), y = day(Date.now() - 864e5); if (s === today) return T('اليوم', 'Today'); if (s === y) return T('أمس', 'Yesterday'); const [, M, D] = s.split('-'); return +D + ' ' + (window.DALMN ? window.DALMN(+M - 1) : M); };
   const DOC = t => t === 'ext' ? 'roast_ext' : 'roast_log';   // دال والعملاء الخارجيين في مستندين منفصلين، لا يختلطان أبداً
   const list = () => ((window.DALD()[DOC(R.t)] || {}).list) || [];
-  const origins = () => ((window.DALD().stock || {}).items) || [];
+  const origins = () => greens().map(i => ({ id: i.s, name: EN() ? i.en.replace(/^Green Coffee - /, '') : i.ar.replace(/^قهوة خضراء - /, '') }));
+  const lossLbl = p => odd(p) ? T('الفاقد غير معتاد، تأكد من الوزن', 'Unusual loss. Check the weights.') : T('الفاقد', 'Weight loss');
+  const SV = { origin: ['اختر المحصول', 'Choose the coffee'], customer: ['اكتب اسم العميل', 'Enter the customer name'], weight: ['تأكد من الأوزان', 'Check the weights'], 'الحذف لدفعات اليوم فقط': ['الحذف لدفعات اليوم فقط', "Only today's batches can be deleted"], forbidden: ['ليس لديك صلاحية', 'Not allowed'] };
+  const svErr = m => SV[m] ? T(SV[m][0], SV[m][1]) : (m || T('تعذّر', 'Failed'));
 
   const CSS = `<style id="rl-css">
-  .rl-tg{display:flex;background:#EEF0F4;border-radius:14px;padding:4px;margin:.6rem 0}.rl-tg button{flex:1;border:0;background:transparent;border-radius:11px;padding:.6rem;font:inherit;font-weight:700;cursor:pointer;color:#475569}.rl-tg button[aria-pressed=true]{background:#fff;color:#0F172A;box-shadow:0 1px 3px rgba(15,23,42,.12)}
-  .rl-f{background:#fff;border-radius:18px;padding:14px;box-shadow:0 0 0 1px #E6E9EF}
-  .rl-f label{display:block;font-size:.8rem;color:#64748B;margin:.55rem 0 .25rem;font-weight:600}
-  .rl-f select,.rl-f input{width:100%;margin:0;border:1.5px solid #DCE1EA;border-radius:12px;padding:.7rem;font:inherit;font-size:1rem;background:#fff;box-sizing:border-box}
-  .rl-two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.rl-two input{font-size:1.35rem;font-weight:800;text-align:center}
-  .rl-ls{display:flex;align-items:center;justify-content:space-between;background:#0F172A;color:#fff;border-radius:14px;padding:.7rem .9rem;margin-top:.7rem}.rl-ls small{opacity:.7}.rl-ls b{font-size:1.4rem}.rl-ls.w{background:#B45309}
-  .rl-sum{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:.8rem 0}.rl-sum div{background:#fff;border-radius:12px;padding:.55rem .3rem;text-align:center;box-shadow:0 0 0 1px #E6E9EF}.rl-sum small{display:block;font-size:.66rem;color:#64748B}.rl-sum b{font-size:1rem}
-  .rl-d{font-size:.78rem;font-weight:800;color:#64748B;margin:1rem 2px .4rem}
-  .rl-it{display:flex;align-items:center;gap:10px;background:#fff;border-radius:14px;padding:.65rem .75rem;margin-bottom:6px;box-shadow:0 0 0 1px #E6E9EF}
-  .rl-it .tm{font-family:ui-monospace,monospace;font-size:.8rem;color:#64748B;width:42px;flex:none}.rl-it .t{flex:1;min-width:0}.rl-it .t b{display:block;font-size:.92rem}.rl-it .t small{color:#64748B;font-size:.74rem}
-  .rl-it .p{font-weight:800;font-size:.9rem;text-align:end}.rl-it .p.w{color:#B45309}
-  .rl-x{border:0;background:transparent;color:#94A3B8;font-size:1rem;cursor:pointer;padding:4px}
-  .rl-ext{font-size:.66rem;background:#FEF3C7;color:#92400E;border-radius:6px;padding:1px 6px;margin-inline-start:4px;font-weight:700}
+  .rl-seg{display:flex;background:var(--fill);border-radius:9px;padding:2px;margin:4px 0 12px}.rl-seg button{flex:1;border:0;background:transparent;min-height:40px;border-radius:7px;font-size:15px;color:var(--ink2);cursor:pointer}.rl-seg button[aria-pressed=true]{background:#fff;color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+  .rl-f{background:#fff;border-radius:12px;padding:12px 16px;margin-bottom:12px}
+  .rl-f label{display:block;font-size:13px;color:var(--ink2);margin:8px 0 0}
+  .rl-two{display:grid;grid-template-columns:1fr 1fr;gap:10px}.rl-two input{font-size:22px;font-weight:600;text-align:center}
+  .rl-ls{display:flex;align-items:center;justify-content:space-between;background:var(--fill);border-radius:10px;padding:10px 12px;margin-top:8px;min-height:48px}.rl-ls small{color:var(--ink2);font-size:14px}.rl-ls b{font-size:22px;font-weight:600}.rl-ls.w{background:var(--warn-soft)}.rl-ls.w small,.rl-ls.w b{color:var(--warn)}
+  .rl-it .tm{font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--ink2);width:44px;flex:none}
+  .rl-x{border:0;background:transparent;color:var(--ink3);width:44px;height:44px;cursor:pointer;display:grid;place-items:center;flex:none;margin-inline-end:-10px}
+  .rl-ext{font-size:12px;background:var(--warn-soft);color:var(--warn);border-radius:6px;padding:1px 6px;margin-inline-start:4px;font-weight:600}
   </style>`;
 
   R.view = function (can) {
@@ -42,41 +46,50 @@
     const ym = today.slice(0, 7); const mo = L.filter(x => day(x.at).slice(0, 7) === ym);
     const mg = mo.reduce((a, x) => a + (+x.g || 0), 0), mr = mo.reduce((a, x) => a + (+x.r || 0), 0);
     const p = loss(num(R.g), num(R.r));
-    const tabs = okD && okX ? `<div class="rl-tg">${[['dal', 'بن دال'], ['ext', 'العملاء الخارجيين']].map(x => `<button data-rt="${x[0]}" aria-pressed="${R.t === x[0]}">${x[1]}</button>`).join('')}</div>` : '';
-    const form = !canEdit ? '' : `<div class="rl-f" style="margin-top:.6rem">${R.t === 'dal'
-        ? `<label for="rl-o">المحصول</label><select id="rl-o"><option value="">اختر المحصول</option>${origins().map(o => `<option value="${esc(o.id)}" ${R.o === o.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select>`
-        : `<label for="rl-c">اسم العميل والمحصول</label><input id="rl-c" value="${esc(R.c)}" placeholder="مثلاً: محمد · كولومبي">`}
-        <div class="rl-two"><div><label for="rl-g">الأخضر (كجم)</label><input id="rl-g" inputmode="decimal" value="${esc(R.g)}" placeholder="0"></div><div><label for="rl-r">المحمّص (كجم)</label><input id="rl-r" inputmode="decimal" value="${esc(R.r)}" placeholder="0"></div></div>
-        <div class="rl-ls ${odd(p) ? 'w' : ''}" id="rl-ls"><small>${odd(p) ? 'الفاقد غير معتاد، تأكد من الوزن' : 'الفاقد'}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b></div>
-        <label for="rl-n">ملاحظة (اختياري)</label><input id="rl-n" value="${esc(R.n)}" placeholder="درجة التحميص أو أي ملاحظة">
-        <button class="btn" data-rc="add" style="margin-top:.8rem" ${R.busy ? 'disabled' : ''}>🔥 سجّل الدفعة</button>
-        <small style="display:block;text-align:center;color:#94A3B8;margin-top:.4rem">الوقت واسمك يتسجلان تلقائياً</small></div>`;
-    const sum = `<div class="rl-sum"><div><small>دفعات اليوم</small><b>${td.length}</b></div><div><small>أخضر اليوم</small><b>${f1(g)}</b></div><div><small>محمّص اليوم</small><b>${f1(r)}</b></div><div><small>فاقد الشهر</small><b>${mg > 0 ? ((mg - mr) / mg * 100).toFixed(1) + '%' : '—'}</b></div></div>`;
+    const tabs = okD && okX ? `<div class="rl-seg" role="group">${[['dal', T('بن دال', 'Dal coffee')], ['ext', T('العملاء الخارجيين', 'Outside customers')]].map(x => `<button data-rt="${x[0]}" aria-pressed="${R.t === x[0]}">${x[1]}</button>`).join('')}</div>` : '';
+    const form = !canEdit ? '' : `<div class="rl-f">${R.t === 'dal'
+        ? `<label for="rl-o">${T('المحصول (بن أخضر في فودكس)', 'Coffee (green, from Foodics)')}</label><select id="rl-o"><option value="">${T('اختر المحصول', 'Choose the coffee')}</option>${origins().map(o => `<option value="${esc(o.id)}" ${R.o === o.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select>${lotChips()}`
+        : `<label for="rl-c">${T('اسم العميل والمحصول', 'Customer and coffee')}</label><input id="rl-c" value="${esc(R.c)}" placeholder="${T('مثلاً: محمد · كولومبي', 'e.g. Mohammed · Colombia')}">`}
+        <div class="rl-two"><div><label for="rl-g">${T('الأخضر (كجم)', 'Green (kg)')}</label><input id="rl-g" inputmode="decimal" value="${esc(R.g)}" placeholder="0"></div><div><label for="rl-r">${T('المحمّص (كجم)', 'Roasted (kg)')}</label><input id="rl-r" inputmode="decimal" value="${esc(R.r)}" placeholder="0"></div></div>
+        <div class="rl-ls ${odd(p) ? 'w' : ''}" id="rl-ls"><small>${lossLbl(p)}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b></div>
+        <label for="rl-n">${T('ملاحظة (اختياري)', 'Note (optional)')}</label><input id="rl-n" value="${esc(R.n)}" placeholder="${T('درجة التحميص أو أي ملاحظة', 'Roast level or any note')}">
+        <button class="btn" data-rc="add" ${R.busy ? 'disabled' : ''}>${T('سجّل الدفعة', 'Log batch')}</button>
+        <small style="display:block;text-align:center;color:var(--ink2);margin-top:6px;font-size:13px">${T('الوقت واسمك يتسجلان تلقائياً', 'Time and your name are saved automatically')}</small></div>`;
+    const sum = `<div class="stats" style="grid-template-columns:repeat(4,1fr)"><div><b>${td.length}</b><small>${T('دفعات اليوم', 'Batches today')}</small></div><div><b>${f1(g)}</b><small>${T('أخضر اليوم', 'Green today')}</small></div><div><b>${f1(r)}</b><small>${T('محمّص اليوم', 'Roasted today')}</small></div><div><b>${mg > 0 ? ((mg - mr) / mg * 100).toFixed(1) + '%' : '—'}</b><small>${T('فاقد الشهر', 'Month loss')}</small></div></div>`;
     const groups = {}; L.slice(0, 120).forEach(x => { (groups[day(x.at)] = groups[day(x.at)] || []).push(x); });
-    const rows = Object.keys(groups).sort().reverse().map(d => `<div class="rl-d">${dName(d)}</div>` + groups[d].map(x => { const lp = loss(+x.g, +x.r);
-      return `<div class="rl-it"><span class="tm">${hm(x.at)}</span><div class="t"><b>${esc(ext ? x.c : (x.on || x.o))}</b><small>${f1(x.g)} ← ${f1(x.r)} كجم · ${esc(x.by || '')}${x.n ? ' · ' + esc(x.n) : ''}</small></div><span class="p ${odd(lp) ? 'w' : ''}">${lp == null ? '—' : lp.toFixed(1) + '%'}</span>${canEdit && day(x.at) === today ? `<button class="rl-x" data-rdel="${esc(x.id)}" aria-label="حذف">✕</button>` : ''}</div>`; }).join('')).join('');
-    return CSS + `<h2>🔥 ${ext ? 'تحميص العملاء الخارجيين' : 'سجل تحميص دال'}</h2>${ext ? '<div class="note">منفصل تماماً عن بن دال ولا يدخل في مخزونها ولا أرقامها.</div>' : ''}${tabs}${form}${sum}${rows || '<div class="note">ما فيه دفعات مسجّلة بعد.</div>'}`;
+    const rows = Object.keys(groups).sort().reverse().map(d => `<div class="sec">${dName(d)}</div><div class="grp">` + groups[d].map(x => { const lp = loss(+x.g, +x.r);
+      return `<div class="cell rl-it"><span class="tm">${hm(x.at)}</span><div class="t"><b class="d">${esc(ext ? x.c : (x.on || x.o))}</b><small>${f1(x.g)} ${T('←', '→')} ${f1(x.r)} ${T('كجم', 'kg')} · <span class="d">${esc(x.by || '')}</span>${x.n ? ' · <span class="d">' + esc(x.n) + '</span>' : ''}</small></div><div class="v"><b style="${odd(lp) ? 'color:var(--warn)' : ''}">${lp == null ? '—' : lp.toFixed(1) + '%'}</b></div>${canEdit && day(x.at) === today ? `<button class="rl-x" data-rdel="${esc(x.id)}" aria-label="${T('حذف', 'Delete')}">${window.DALICO ? window.DALICO('x', 18) : '×'}</button>` : ''}</div>`; }).join('') + '</div>').join('');
+    return CSS + `<h1>${ext ? T('تحميص العملاء الخارجيين', 'Outside customer roasting') : T('سجل تحميص دال', 'Dal roasting log')}</h1>${ext ? `<p class="note">${T('منفصل تماماً عن بن دال ولا يدخل في مخزونها ولا أرقامها.', "Kept completely separate from Dal's coffee. Not part of Dal's stock or numbers.")}</p>` : '<div style="height:8px"></div>'}${tabs}${form}${sum}${rows || `<p class="note">${T('ما فيه دفعات مسجّلة بعد.', 'No batches logged yet.')}</p>`}`;
   };
 
-  function upd() { const p = loss(num(R.g), num(R.r)); const el = document.getElementById('rl-ls'); if (!el) return; el.classList.toggle('w', odd(p)); el.innerHTML = `<small>${odd(p) ? 'الفاقد غير معتاد، تأكد من الوزن' : 'الفاقد'}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b>`; }
+  // دفعات الأخضر المفتوحة للمحصول المختار: إن كانت أكثر من واحدة يختار الموظف (الأقدم أولًا)؛ وإن لم توجد دفعات بعد فالرصيد «—» ويُعلَّم للمالك
+  function lotChips() { if (!R.o) return ''; const L = lotsOf(R.o); const bal = U() ? U().balance(((window.DALD().moves || {}).list) || [], R.o) : null;
+    const sup = s => s && s.id === 'dal' && EN() ? 'Dal (in-house)' : (s && s.name) || '';
+    const head = `<label>${T('رصيد الأخضر حسب الدفعات', 'Green balance from lots')}: <b style="color:var(--ink)">${bal == null ? '—' : f1(bal) + ' ' + T('كجم', 'kg')}</b>${bal == null ? ' · ' + T('لا دفعات بعد (يُسجَّل ويُعلَّم للمالك)', 'no lots yet (logged and flagged for the owner)') : ''}</label>`;
+    if (L.length < 2) return head;
+    return head + `<div class="chips" style="padding-top:6px">${L.map((l, k) => `<button data-rlot="${esc(l.id)}" aria-pressed="${(R.lot || L[0].id) === l.id}"><bdi class="d">${esc(sup(l.sup))}</bdi> · <bdi>${dName(day(l.at))}</bdi> · ${T('باقي', 'left')} ${f1(l.rem)}</button>`).join('')}</div>`; }
+  function upd() { const p = loss(num(R.g), num(R.r)); const el = document.getElementById('rl-ls'); if (!el) return; el.classList.toggle('w', odd(p)); el.innerHTML = `<small>${lossLbl(p)}</small><b>${p == null ? '—' : p.toFixed(1) + '%'}</b>`; }
   document.addEventListener('input', e => { const id = e.target.id; if (!/^rl-/.test(id)) return; const k = { 'rl-g': 'g', 'rl-r': 'r', 'rl-c': 'c', 'rl-n': 'n' }[id]; if (k) { R[k] = e.target.value; upd(); } });
-  document.addEventListener('change', e => { if (e.target.id === 'rl-o') R.o = e.target.value; });
+  document.addEventListener('change', e => { if (e.target.id === 'rl-o') { R.o = e.target.value; R.lot = null; window.DALRENDER(); } });
   document.addEventListener('click', async e => {
+    if (!e.target.closest) return;
     const tg = e.target.closest('[data-rt]'); if (tg) { R.t = tg.getAttribute('data-rt'); window.DALRENDER(); return; }
-    const dl = e.target.closest('[data-rdel]'); if (dl) { if (!confirm('حذف هذه الدفعة؟')) return; try { const r = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'del', t: R.t, id: dl.getAttribute('data-rdel') }) }); if (r.ok) { window.DALD()[DOC(R.t)] = r.log; window.DALRENDER(); window.DALTOAST('✓ انحذفت'); } else window.DALTOAST(r.err || 'تعذّر'); } catch (x) { window.DALTOAST('تعذّر'); } return; }
+    const lt = e.target.closest('[data-rlot]'); if (lt) { R.lot = lt.getAttribute('data-rlot'); window.DALRENDER(); return; }
+    const dl = e.target.closest('[data-rdel]'); if (dl) { if (!confirm(T('حذف هذه الدفعة؟', 'Delete this batch?'))) return; try { const r = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'del', t: R.t, id: dl.getAttribute('data-rdel') }) }); if (r.ok) { window.DALD()[DOC(R.t)] = r.log; if (r.moves) window.DALD().moves = r.moves; if (r.alerts) window.DALD().alerts_stock = r.alerts; window.DALRENDER(); window.DALTOAST(T('انحذفت', 'Deleted')); } else window.DALTOAST(svErr(r.err)); } catch (x) { window.DALTOAST(T('تعذّر', 'Failed')); } return; }
     const b = e.target.closest('[data-rc="add"]'); if (!b || R.busy) return;
     const g = num(R.g), r = num(R.r);
-    if (R.t === 'dal' && !R.o) return window.DALTOAST('اختر المحصول');
-    if (R.t === 'ext' && !R.c.trim()) return window.DALTOAST('اكتب اسم العميل');
-    if (!(g > 0)) return window.DALTOAST('اكتب وزن الأخضر');
-    if (!(r > 0) || r > g) return window.DALTOAST('وزن المحمّص لازم يكون أقل من الأخضر');
+    if (R.t === 'dal' && !R.o) return window.DALTOAST(T('اختر المحصول', 'Choose the coffee'));
+    if (R.t === 'ext' && !R.c.trim()) return window.DALTOAST(T('اكتب اسم العميل', 'Enter the customer name'));
+    if (!(g > 0)) return window.DALTOAST(T('اكتب وزن الأخضر', 'Enter the green weight'));
+    if (!(r > 0) || r > g) return window.DALTOAST(T('وزن المحمّص لازم يكون أقل من الأخضر', 'Roasted weight must be less than green'));
     const o = origins().find(x => x.id === R.o);
     R.busy = true; window.DALRENDER();
     try {
-      const res = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'add', t: R.t, o: R.o, on: o ? o.name : '', c: R.c.trim(), g, r, n: R.n.trim() }) });
-      if (!res.ok) throw new Error(res.err || 'تعذّر');
-      window.DALD()[DOC(R.t)] = res.log; Object.assign(R, { g: '', r: '', n: '', c: '' }); window.DALTOAST('✓ انسجّلت الدفعة');
-    } catch (x) { window.DALTOAST('تعذّر الحفظ — ' + x.message); }
+      const lots = R.t === 'dal' ? lotsOf(R.o) : []; const res = await window.DALAPI('/staff/roast', { method: 'POST', body: JSON.stringify({ op: 'add', t: R.t, gs: R.t === 'dal' ? R.o : undefined, lot: lots.length > 1 ? (R.lot || lots[0].id) : undefined, o: R.o, on: o ? o.name : '', c: R.c.trim(), g, r, n: R.n.trim() }) });
+      if (!res.ok) throw new Error(svErr(res.err));
+      window.DALD()[DOC(R.t)] = res.log; if (res.moves) window.DALD().moves = res.moves; if (res.alerts) window.DALD().alerts_stock = res.alerts; Object.assign(R, { g: '', r: '', n: '', c: '', lot: null });
+      window.DALTOAST(res.out ? T('انسجّلت الدفعة: سُحب ', 'Batch logged: issued ') + f1(res.out.tot) + T(' كجم أخضر وأُضيف ', ' kg green, added ') + f1(res.inn.tot) + T(' كجم محمّص', ' kg roasted') + (res.nolot ? T(' · بلا دفعة أخضر (للمالك)', ' · no green lot (flagged)') : '') : T('انسجّلت الدفعة', 'Batch logged'));
+    } catch (x) { window.DALTOAST(T('تعذّر الحفظ — ', 'Could not save — ') + x.message); }
     R.busy = false; window.DALRENDER();
   });
 })();

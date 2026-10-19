@@ -409,7 +409,7 @@ async function invIndexAdd(rec) {   // يضيف/يحدّث سجلًا في live/
 function invExt(m) { return /pdf/i.test(m) ? 'pdf' : /png/i.test(m) ? 'png' : /webp/i.test(m) ? 'webp' : 'jpg'; }
 function invFile(rec) { const ym = String(rec.date || rec.at || '').slice(0, 7) || 'unknown'; const d = IDIR + '/' + ym; try { fs.mkdirSync(d, { recursive: true }); } catch (e) {} return d + '/' + rec.id + '.' + invExt(rec.mime); }
 function readBody(req, max) { return new Promise((ok, no) => { let b = ''; req.on('data', c => { b += c; if (b.length > max) { req.destroy(); no(new Error('too-big')); } }); req.on('end', () => ok(b)); req.on('error', no); }); }
-function cors(req, res) { const o = req.headers.origin || ''; if (/erihdev\.github\.io$|^https:\/\/dalksa\.com$/.test(o)) { res.setHeader('Access-Control-Allow-Origin', o); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Allow-Headers', 'content-type,authorization'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS'); } }
+function cors(req, res) { const o = req.headers.origin || ''; if (/erihdev\.github\.io$|^https:\/\/dalksa\.com$/.test(o)) { res.setHeader('Access-Control-Allow-Origin', o); res.setHeader('Access-Control-Allow-Credentials', 'true'); res.setHeader('Access-Control-Allow-Headers', 'content-type,authorization'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS'); res.setHeader('Access-Control-Expose-Headers', 'X-Dal-Doc'); } }
 async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BOM) لشهر
   let doc = { items: [] }; try { const r = await gas({ op: 'get', paths: ['live/invoices'] }); const d = r.docs && r.docs['live/invoices']; if (d && d.data) doc = d.data; } catch (e) {}
   const items = (doc.items || []).filter(x => String(x.date || x.at || '').slice(0, 7) === ym);
@@ -427,14 +427,202 @@ async function invExport(ym) {   // ZIP: الملفات + فهرس CSV (UTF-8 BO
 
 // ===== بوابة الموظفين: حسابات برموز PIN وصلاحيات لكل صفحة (يشوف/يعدّل)، تُفرض هنا على الخادم لا في المتصفح =====
 const crypto2 = require('crypto');
-const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state'], roast: ['roast_log', 'stock'], roastx: ['roast_ext'] };
+// صفحات الموظفين والمستندات التي تقرؤها كل صفحة. «move» (حركة المخزون) يحتاج الحركات والوحدات وآخر جرد للرصيد وفهرس الفواتير (مختصر) للاستلام
+const STAFF_PAGES = { invoices: ['invoices'], stock: ['stock', 'stock_state'], customers: ['cust_meta', 'cust_salla', 'cust_wa', 'customers', 'crm_state'], messages: ['crm_state'], count: ['count_state', 'units'], roastx: ['roast_ext'], units: ['units', 'pending_items', 'alerts_stock'], move: ['moves', 'units', 'stock', 'count_state', 'invoices', 'suppliers', 'pending_items', 'alerts_stock', 'customers', 'docs_out', 'roast_log', 'staff_names'], roast: ['roast_log', 'stock', 'moves', 'units', 'docs_out'], _any: ['alerts_stock'] };
+const DOCS = require('./docs');   // المستندات المطبوعة: سجل الحركة / سند استلام / سند تسليم (PDF مرقّم)
+// ===== مفاتيح الوحدات وحركة المخزون: الأساس مقفول على وحدة فودكس من count-items.json (نسخة مطابقة لملف التطبيق) =====
+const DALU = require('./units-core');
+let CITEMS = []; try { CITEMS = JSON.parse(fs.readFileSync(__dirname + '/count-items.json', 'utf8')).items || []; } catch (e) { console.log('count-items missing', e.message); }
+const citem = s => CITEMS.find(i => i.s === s) || null;
+const MOVE_UNDO_MS = 5 * 60e3, MOVES_CAP = 5000, UNITS_LOG_CAP = 500;
+// تعديل سلّم صنف: يتحقق، يقفل الأساس، ويضيف سطرًا في السجل باسم المعدِّل ووقته. يرجع المستند الجديد أو يرمي خطأ
+function unitsApply(doc, j, who, now) {
+  const st = Object.assign({ items: {}, log: [] }, doc || {}); st.items = Object.assign({}, st.items); st.log = (st.log || []).slice();
+  const sku = String(j.sku || '').slice(0, 40); const it = citem(sku); if (!it) throw new Error('sku');
+  const cur = st.items[sku] || Object.assign({}, DALU.defaults(it), { _def: 1 }); const v = DALU.validate(j.lad || cur.lad, it, j.min === undefined ? cur.min : j.min); if (!v.ok) throw new Error(v.err);
+  const desc = e => DALU.describe(e.lad) + (e.min != null ? ' | min=' + e.min : '');
+  const before = desc(cur) + (cur._def ? ' (default)' : ''); const after = desc(v.entry); if (desc(cur) === after) return doc;   // لا تغيير: يرجع المستند نفسه بلا سطر سجل
+  st.items[sku] = v.entry; st.log.unshift({ at: now, by: who, sku, change: (before + ' -> ' + after).slice(0, 240) }); st.log = st.log.slice(0, UNITS_LOG_CAP); st.at = now;
+  return st;
+}
+// ===== حركة المخزون والدفعات: كل «إضافة» دفعة من مورد (t:'in' مع rem = الباقي)، و«السحب» يستهلك من الدفعات بالأقدم أولًا (أو دفعة يختارها الموظف)
+// سجلات live/moves.list: in (دفعة) / out (سحب مع alloc) / done (خلصت دفعة) / adj (فرق جرد طُبّق على أحدث دفعة). الصنف قد يكون مؤقتًا tmp-… بانتظار فودكس
+const INTERNAL_SUP = { id: 'dal', name: 'دال (إنتاج داخلي)' }, ROAST_SUP = { id: 'roast', name: 'تحميص دال' };
+const r4 = v => Math.round(v * 10000) / 10000;
+const pendItem = (pend, s) => { const p = pend && (pend.items || []).find(x => x.id === s && !x.linked); return p ? { s: p.id, ar: p.ar, en: p.en, u: p.u, c: 'Pending', pending: true } : null; };
+const itemOf = (s, pend) => citem(s) || pendItem(pend, s);
+const lotsOf = (list, sku) => list.filter(x => x.t === 'in' && x.s === sku && x.rem > 0).sort((a, b) => a.at.localeCompare(b.at));
+function supOf(j, sups, pend, who, now, sys) {   // المورد: من القائمة، أو مورد مؤقت موجود، أو «مورد جديد» يُسجَّل بانتظار المالك، أو دال نفسها (sys: مسار التحميص)
+  const sp = j.sup || {}; const id = String(sp.id || '').slice(0, 60);
+  if (id === INTERNAL_SUP.id) return { sup: INTERNAL_SUP }; if (id === ROAST_SUP.id) return sys ? { sup: ROAST_SUP } : null;   // «تحميص دال» لا يُختار يدويًا: يأتي من مسار التحميص فقط
+  const s = ((sups && sups.list) || []).find(x => x.id === id); if (s) return { sup: { id: s.id, name: String(s.name || s.id).slice(0, 80) } };
+  const ps = ((pend && pend.suppliers) || []).find(x => x.id === id); if (ps) return { sup: { id: ps.id, name: ps.name, pending: true } };
+  const name = String(sp.name || '').trim().slice(0, 80); if (sp.new && name) { const np = { id: 'psup-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, by: who, at: now }; return { sup: { id: np.id, name, pending: true }, newSup: np }; }
+  return null;
+}
+// العميل في «تسليم لعميل»: من قائمة العملاء (live/customers)، أو عميل مؤقت سبق تسجيله، أو «عميل جديد» يُسجَّل بانتظار المالك. لا أرقام جوال تُحفظ في الحركة
+function custOf(j, custs, pend, who, now) {
+  const c = j.cust || {}; const id = String(c.id || '').slice(0, 80);
+  const k = ((custs && custs.list) || []).find(x => String(x.id) === id || (id && String(x.phone || '').replace(/\D/g, '') === id)); if (k) return { cust: { id: String(k.id), name: String(k.name || k.id).slice(0, 80), type: k.type || undefined } };
+  const pc = ((pend && pend.customers) || []).find(x => x.id === id); if (pc) return { cust: { id: pc.id, name: pc.name, pending: true } };
+  const name = String(c.name || '').trim().slice(0, 80); if (c.new && name) { const np = { id: 'pcus-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, by: who, at: now }; return { cust: { id: np.id, name, pending: true }, newCust: np }; }
+  return null;
+}
+function moveApply(doc, j, who, unitsDoc, now, ctx) {
+  ctx = ctx || {}; const pend = ctx.pend || { items: [], suppliers: [] };
+  const st = Object.assign({ list: [] }, doc || {}); st.list = (st.list || []).slice(); const out = { st, events: [] };
+  const num = v => (v === '' || v == null || !isFinite(+v)) ? null : r4(+v);
+  const mkId = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  if (j.op === 'add') {
+    const t = j.t === 'in' ? 'in' : j.t === 'out' ? 'out' : null; if (!t) throw new Error('type');
+    const sku = String(j.s || '').slice(0, 40); const it = itemOf(sku, pend); if (!it) throw new Error('sku');
+    const entry = DALU.merge([it], unitsDoc)[sku];
+    const lines = (Array.isArray(j.lines) ? j.lines : []).slice(0, 20).map(l => ({ n: num(l && l.n), u: String((l && l.u) || '').slice(0, 12) }));
+    if (!lines.length || lines.some(l => !(l.n > 0) || !DALU.usable(entry, l.u))) throw new Error('lines');
+    const tot = DALU.total(entry, lines); if (!(tot > 0)) throw new Error('total');
+    const rec = { id: mkId('M'), at: now, by: who, t, s: sku, lines, tot, base: entry.base };
+    const note = String(j.note || '').trim().slice(0, 120); if (note) rec.note = note;
+    const batch = ctx.sys && j.batch ? String(j.batch).slice(0, 40) : '';   // وسم الدفعة من مسار التحميص فقط، لا من طلب العميل
+    if (t === 'in') {
+      const sp = supOf(j, ctx.sups, pend, who, now, ctx.sys); if (!sp) throw new Error('sup');
+      rec.sup = sp.sup; rec.rem = tot; if (sp.newSup) out.newSup = sp.newSup;
+      const inv = String(j.inv || '').trim().slice(0, 40); if (inv) { rec.inv = inv; const ix = (((ctx.invs || {}).items) || []).find(x => x.id === inv); if (ix && ix.invoice_no) rec.invNo = String(ix.invoice_no).slice(0, 40); }   // رقم الفاتورة كما طُبع عليها (للعرض والسندات)؛ inv يبقى مفتاح الفهرس
+      if (batch) rec.batch = batch;
+    } else {
+      if (batch) rec.batch = batch;
+      if (j.dest === 'cust') { const cu = custOf(j, ctx.custs, pend, who, now); if (!cu) throw new Error('cust'); rec.cust = cu.cust; if (cu.newCust) out.newCust = cu.newCust; }   // تسليم لعميل: سحب يحمل العميل ويُنتج سند تسليم
+      // الاستهلاك: الدفعة المختارة أولًا ثم الباقي بالأقدم؛ ما لا تغطيه الدفعات يبقى «بلا دفعة» (مخزون سابق للنظام)
+      const open = lotsOf(st.list, sku); const want = String(j.lot || ''); const order = want ? [open.find(x => x.id === want)].filter(Boolean).concat(open.filter(x => x.id !== want)) : open;
+      let left = tot; rec.alloc = [];
+      for (const lot of order) { if (left <= 0) break; const n = r4(Math.min(left, lot.rem)); if (n <= 0) continue; const i = st.list.findIndex(x => x.id === lot.id); st.list[i] = Object.assign({}, lot, { rem: r4(lot.rem - n) }); rec.alloc.push({ lot: lot.id, n }); left = r4(left - n);
+        if (st.list[i].rem <= 0) { const ev = { id: mkId('E'), at: now, by: who, t: 'done', s: sku, lot: lot.id, sup: lot.sup, base: entry.base }; out.events.push(ev); } }
+      if (left > 0) { rec.un = left; if (!open.length) rec.flag = 'nolot'; }   // لا دفعات للصنف بعد: يُسجَّل ويُعلَّم للمالك ولا يظهر رصيد سالب
+    }
+    st.list.unshift(rec); out.events.forEach(ev => st.list.unshift(ev)); st.list = st.list.slice(0, MOVES_CAP); st.at = now; out.rec = rec; return out;
+  }
+  if (j.op === 'del') {
+    const rec = st.list.find(x => x.id === j.id); if (!rec || !/^(in|out)$/.test(rec.t)) throw new Error('nf');
+    if (!ctx.sys && rec.by !== who) throw new Error('owner'); if (rec.t === 'in' && r4(rec.rem) !== r4(rec.tot)) throw new Error('used');   // دفعة بدأ السحب منها لا تُلغى
+    if (rec.doc && DOCS.isSigned(ctx.docs, rec.doc)) throw new Error('signed');   // مستند موقّع: محتواه مقفول، لا تراجع ولا تعديل لأسطره
+    if (!ctx.sys && new Date(now) - new Date(rec.at) > MOVE_UNDO_MS) throw new Error('late');   // sys: تراجع دفعة تحميص (قاعدة اليوم نفسه في مسار التحميص)
+    if (rec.t === 'out') for (const a of rec.alloc || []) { const i = st.list.findIndex(x => x.id === a.lot); if (i >= 0) { st.list[i] = Object.assign({}, st.list[i], { rem: r4(st.list[i].rem + a.n) }); st.list = st.list.filter(x => !(x.t === 'done' && x.lot === a.lot)); } }
+    st.list = st.list.filter(x => x.id !== j.id); st.at = now; out.rec = rec; return out;
+  }
+  throw new Error('op');
+}
+// دفعة تحميص دال تحرّك المخزون: سحب الأخضر (من الدفعة المختارة ثم الأقدم) وإضافة المحمّص كدفعة موردها «تحميص دال». عملية واحدة؛ دفعات العملاء الخارجيين لا تمر هنا أبدًا
+function roastMoves(movesDoc, batch, who, unitsDoc, now, lot) {
+  const gs = batch.gs; const rs = DALU.ROAST_MAP[gs]; if (!rs) throw new Error('green');
+  const o1 = moveApply(movesDoc, { op: 'add', t: 'out', s: gs, lines: [{ n: batch.g, u: 'kg' }], lot, batch: batch.id, note: 'تحميص ' + batch.id }, who, unitsDoc, now, { sys: true });
+  const o2 = moveApply(o1.st, { op: 'add', t: 'in', s: rs, lines: [{ n: batch.r, u: 'kg' }], sup: { id: ROAST_SUP.id }, batch: batch.id, note: 'تحميص ' + batch.id }, who, unitsDoc, now, { sys: true });
+  return { st: o2.st, out: o1.rec, inn: o2.rec, events: (o1.events || []).concat(o2.events || []), nolot: o1.rec.flag === 'nolot' };
+}
+function roastUndo(movesDoc, batch, who, now) { let st = movesDoc; for (const id of (batch.mv || [])) { try { st = moveApply(st, { op: 'del', id }, who, { items: {} }, now, { sys: true }).st; } catch (e) { if (e.message !== 'nf') throw e; } } return st; }
+// تنبيهات الحد الأدنى: تُحسب بعد كل تغيير في الدفعات؛ إشعار واحد للصنف في اليوم عبر مسار الإشعارات الموجود (الناقل)
+async function notifyOwner(title, msg, tag) { if (!RELAY || !KEY) return false; try { const r = await fetch(RELAY + '/push/send', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': KEY }, body: JSON.stringify({ title, msg, lv: 'warn', tag }) }); return r.ok; } catch (e) { return false; } }
+function alertsCompute(prev, unitsDoc, movesDoc, now, items) {   // يرجع {doc, fresh:[...]} — fresh: ما يستحق إشعارًا اليوم (أول مرة في اليوم)
+  const units = DALU.merge(items || CITEMS, unitsDoc); const cur = DALU.alerts(items || CITEMS, units, (movesDoc && movesDoc.list) || []);
+  const day = DOCS.dayIso(now); const sent = Object.assign({}, (prev && prev.sent) || {}); const fresh = [];   // «اليوم» بتوقيت الرياض لا UTC: إشعار واحد للصنف في يوم المحمصة
+  for (const a of cur) { const it = citem(a.s) || {}; a.ar = it.ar; a.en = it.en; a.at = now; if (sent[a.s] !== day) { sent[a.s] = day; fresh.push(a); } }
+  for (const k of Object.keys(sent)) if (sent[k] !== day && !cur.some(a => a.s === k)) delete sent[k];
+  return { doc: { at: now, items: cur, sent }, fresh };
+}
+async function alertsRefresh(unitsDoc, movesDoc, now) {   // بعد كل تغيير: يكتب live/alerts_stock ويرسل إشعارًا لما وصل حده أول مرة اليوم
+  try { const r = await gas({ op: 'get', paths: ['live/alerts_stock'] }); const d = r.docs && r.docs['live/alerts_stock']; const { doc, fresh } = alertsCompute((d && d.data) || null, unitsDoc, movesDoc, now);
+    await gas({ op: 'set', path: 'live/alerts_stock', data: doc });
+    // نص الإشعار يحمل تاريخ اليوم: الناقل يمنع تكرار النص نفسه، فبدونه لا يصل تنبيه اليوم التالي إن لم يتغير الرصيد
+    for (const a of fresh) await notifyOwner('وصل للحد الأدنى', (a.kind === 'roast' ? 'حمّص ' : 'اطلب ') + a.ar + ' — الباقي ' + a.bal + ' ' + DALU.name(a.base, false) + ' (الحد ' + a.min + ') · ' + DOCS.fmtDay(now, 'ar').full, 'stock-min-' + a.s);
+    return doc; } catch (e) { console.log('alerts', e.message); return null; }
+}
+// فرق الجرد: الجرد لكل صنف (فودكس بلا دفعات)؛ إن اختلف عن مجموع باقي الدفعات يُطبَّق الفرق على أحدث دفعة (ثم التي قبلها إن لم تكفِ) ويُعلَّم
+function countAdjust(doc, sku, q, who, now, cnt) {
+  const st = Object.assign({ list: [] }, doc || {}); st.list = (st.list || []).slice();
+  const lots = st.list.filter(x => x.t === 'in' && x.s === sku).sort((a, b) => b.at.localeCompare(a.at)); if (!lots.length) return { st, rec: null };
+  const sum = r4(lots.reduce((a, x) => a + (+x.rem || 0), 0)); let diff = r4(q - sum); if (diff === 0) return { st, rec: null };
+  const applied = []; let left = diff;
+  for (const lot of lots) { if (left === 0) break; const i = st.list.findIndex(x => x.id === lot.id); const cur = +st.list[i].rem || 0; const n = left > 0 ? left : -Math.min(cur, -left); if (n === 0) continue; st.list[i] = Object.assign({}, st.list[i], { rem: r4(cur + n) }); applied.push({ lot: lot.id, n: r4(n) }); left = r4(left - n); }
+  const rec = { id: 'A' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: now, by: who, t: 'adj', s: sku, n: diff, alloc: applied, cnt, flag: 1, base: (lots[0].base || '') };
+  st.list.unshift(rec); st.list = st.list.slice(0, MOVES_CAP); st.at = now; return { st, rec };
+}
+// الأصناف المؤقتة (بانتظار إضافتها في فودكس) والموردون المؤقتون — لا يُنشأ شيء في فودكس أبدًا
+function pendingApply(doc, j, who, now, movesDoc) {
+  const st = Object.assign({ items: [], suppliers: [] }, doc || {}); st.items = (st.items || []).slice(); st.suppliers = (st.suppliers || []).slice(); const out = { st };
+  if (j.op === 'add') {
+    const ar = String(j.ar || '').trim().slice(0, 80), en = String(j.en || '').trim().slice(0, 80); if (!ar && !en) throw new Error('name');
+    const u = String(j.u || '').trim(); if (!DALU.baseOf({ u })) throw new Error('unit');
+    const it = { id: 'tmp-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), ar: ar || en, en: en || ar, u, c: 'Pending', by: who, at: now }; if (j.sup) it.sup = String(j.sup.name || j.sup.id || '').slice(0, 80);
+    st.items.unshift(it); st.items = st.items.slice(0, 200); st.at = now; out.item = it; return out;
+  }
+  if (j.op === 'sup') { const name = String(j.name || '').trim().slice(0, 80); if (!name) throw new Error('name'); const sp = { id: 'psup-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, by: who, at: now }; st.suppliers.unshift(sp); st.suppliers = st.suppliers.slice(0, 100); st.at = now; out.sup = sp; return out; }
+  if (j.op === 'link') {   // ربط صنف مؤقت برمز فودكس بعد تحديث القائمة: تُنقل حركاته ودفعاته إلى الرمز الحقيقي (الوحدة الأساسية لازم تتطابق)
+    const i = st.items.findIndex(x => x.id === j.id); if (i < 0 || st.items[i].linked) throw new Error('nf');
+    const it = citem(String(j.sku || '')); if (!it) throw new Error('sku'); if (DALU.baseOf(it) !== DALU.baseOf(st.items[i])) throw new Error('unit');
+    st.items[i] = Object.assign({}, st.items[i], { linked: { sku: it.s, at: now, by: who } }); st.at = now;
+    const mv = Object.assign({ list: [] }, movesDoc || {}); let n = 0; mv.list = (mv.list || []).map(x => x.s === j.id ? (n++, Object.assign({}, x, { s: it.s, from: j.id })) : x); if (n) mv.at = now;
+    out.moves = mv; out.moved = n; return out;
+  }
+  throw new Error('op');
+}
 const loginHits = new Map();   // ip -> [timestamps]
 function staffToken(id, exp) { return id + '.' + exp + '.' + crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40); }
 function staffVerify(tok) { const [id, exp, sig] = String(tok || '').split('.'); if (!id || !exp || !sig) return null; if (+exp < Date.now()) return null; const ok = crypto2.timingSafeEqual(Buffer.from(sig), Buffer.from(crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40))); return ok ? id : null; }
+// إسقاط العميل لنسخة الموظف: بلا مبالغ (amount/price)، بلا تحويلات، بلا نص رسائل، بلا حقائق المالك؛ full = عنده صفحة العملاء (الرقم كاملًا والطلبات كميةً وحالةً)
+const maskPhone = p => String(p || '').replace(/\D/g, '').replace(/^(\d{0,3})\d*(\d{3})$/, (m, a, b) => a + '•••••' + b);
+function custStaff(x, full) {
+  const o = { id: x.id, name: x.name, type: x.type };
+  if (full) { o.phone = x.phone || ''; o.city = x.city; o.lastAt = x.lastAt; if (x.last && x.last.d) o.last = { d: x.last.d }; if (x.returning) o.returning = true; o.orders = (x.orders || []).map(r => ({ id: r.id, d: r.d, what: DOCS.scrubAmounts(r.what), kg: r.kg, st: r.st, src: r.src })); }   // بلا ملاحظات (قد تحمل أسعارًا)
+  else o.phone_m = maskPhone(x.phone);
+  return o;
+}
 async function staffList() { try { const r = await gas({ op: 'get', paths: ['live/staff'] }); const d = r.docs && r.docs['live/staff']; return (d && d.data && Array.isArray(d.data.users)) ? d.data.users : []; } catch (e) { return []; } }
 async function staffLog(who, action, detail) { try { const r = await gas({ op: 'get', paths: ['live/staff_log'] }); const d = r.docs && r.docs['live/staff_log']; const L = (d && d.data && Array.isArray(d.data.items)) ? d.data.items : []; L.unshift({ t: new Date().toISOString(), who, action, detail: String(detail || '').slice(0, 160) }); await gas({ op: 'set', path: 'live/staff_log', data: { at: new Date().toISOString(), items: L.slice(0, 500) } }); } catch (e) {} }
 function sha(s) { return crypto2.createHash('sha256').update(s).digest('hex'); }
 let countBusy = Promise.resolve(); function countQueue(fn) { const p = countBusy.then(fn, fn); countBusy = p.catch(() => {}); return p; }
+// مستند PDF مرقّم: {kind, params, lang} جديد (سجل حركة دائمًا رقم جديد؛ استلام/تسليم يأخذ رقم الحركة إن سبق ترقيمها) أو {no} إعادة طباعة. يرجع {no, pdf}
+let LOGO_URI = null; try { LOGO_URI = 'data:image/png;base64,' + fs.readFileSync(__dirname + '/logo.png').toString('base64'); } catch (e) {}
+// فهرس المستندات مقسّم بالسنة: يقرأ فهرس السنة (ويهيّئه من الفهرس القديم live/docs_out أول مرة) مع الفهرس القديم للقراءة المتوافقة، وأي مستندات أخرى مطلوبة
+const CY = () => DOCS.yearOfAt(new Date().toISOString());
+async function docsRead(year, extra) {
+  const P = DOCS.docsPath(year); const r = await gas({ op: 'get', paths: [P, DOCS.LEGACY].concat(extra || []) }); const g = p => { const d = r.docs && r.docs[p]; return (d && d.data) || null; };
+  const legacy = g(DOCS.LEGACY); const st = g(P) || DOCS.docsSeed(legacy, year); return { st, legacy, year, g, path: P, all: () => DOCS.docsMerge(st, legacy) };
+}
+async function docPdf(j, who) {
+  const lang = j.lang === 'en' ? 'en' : 'ar'; const now = new Date().toISOString();
+  return countQueue(async () => {
+    const year = j.no ? (DOCS.yearOfNo(j.no) || CY()) : CY(); const X = await docsRead(year, ['live/moves', 'live/pending_items', 'live/invoices']); const g = n => X.g('live/' + n);
+    const moves = g('moves') || { list: [] }; let docs = X.st; let item = null, reprint = false;
+    const D = { moves, pending_items: g('pending_items') || { items: [] }, invoices: g('invoices') || { items: [] }, items: CITEMS };
+    if (j.no) { item = DOCS.docsFind(docs, X.legacy, String(j.no)); if (!item) throw new Error('nf'); reprint = true; }
+    else { const kind = String(j.kind || ''); if (!DOCS.KINDS[kind]) throw new Error('kind'); const params = DOCS.pickParams(kind, j.params); DOCS.build(kind, params, D, lang);   // حقول معروفة فقط تُحفظ في الفهرس (لا نص حر طويل)؛ البناء أولًا حتى لا يُستهلك رقم لمستند لا يُبنى
+      const mv = params.move && (moves.list || []).find(x => x.id === params.move); if (mv && mv.doc) { item = DOCS.docsFind(docs, X.legacy, mv.doc); reprint = !!item; }
+      if (!item) { const ref = kind === 'mov' ? { from: params.from, to: params.to, item: params.item, sup: params.sup, cust: params.cust } : mv ? (mv.sup ? { sup: mv.sup.id, name: mv.sup.name, item: mv.s } : mv.cust ? { cust: mv.cust.id, name: mv.cust.name, item: mv.s } : { item: mv.s }) : { inv: params.inv };
+        const da = DOCS.docAdd(docs, kind, params, who, now, ref); docs = da.st; item = da.item; if (mv) { mv.doc = item.no; moves.at = now; await gas({ op: 'set', path: 'live/moves', data: moves }); } await gas({ op: 'set', path: X.path, data: docs }); } }
+    let sigs = item.sigs || []; if (sigs.length) { const rs = await gas({ op: 'get', paths: [DOCS.sigsPath(DOCS.yearOfNo(item.no) || year)] }); const sd = rs.docs && rs.docs[DOCS.sigsPath(DOCS.yearOfNo(item.no) || year)]; sigs = DOCS.sigMerge(item, (sd && sd.data) || null).sigs; }
+    const doc = DOCS.docData(item, D, lang);   // مستند موقّع: من النسخة المجمّدة عند التوقيع؛ وإلا من البيانات الحية
+    const pdf = await DOCS.renderPdf(DOCS.html(doc, { no: item.no, by: who, printedAt: now, reprint, logo: LOGO_URI, sigs }, lang));   // إعادة الطباعة تحمل التواقيع دائمًا
+    await staffLog(who, 'doc', (reprint ? 'إعادة طباعة ' : 'طباعة ') + item.no); return { no: item.no, pdf, item };
+  });
+}
+// توقيع إلكتروني على مستند: {no, role, name, png} أو (المالك فقط) {kind:'mov', params, adj, role:'appr', name, png} يُنشئ سجل الحركة ثم يوقّعه ويعلّم فرق الجرد adj بالرقم.
+// يرجع {item (سجل المستند كاملًا), sig}. الأخطاء: nf 404 | role/png/name/params 400 | forbidden 403 | dup 409
+async function docSign(j, who, by, ua, owner) {
+  const now = new Date().toISOString();
+  return countQueue(async () => {
+    let no = String(j.no || ''); const year = no ? (DOCS.yearOfNo(no) || CY()) : CY(); const X = await docsRead(year, ['live/moves', 'live/pending_items', 'live/invoices', DOCS.sigsPath(year)]); const g = n => X.g('live/' + n);
+    let docs = X.st; let moves = null; const D = { moves: g('moves') || { list: [] }, pending_items: g('pending_items') || { items: [] }, invoices: g('invoices') || { items: [] }, items: CITEMS };
+    if (!no && j.kind === 'mov') { if (!owner) throw new Error('forbidden'); const params = DOCS.pickParams('mov', j.params); DOCS.build('mov', params, D, 'ar');   // يتحقق من التواريخ قبل الترقيم
+      const adj = j.adj ? String(j.adj).slice(0, 40) : ''; const da = DOCS.docAdd(docs, 'mov', params, who, now, Object.assign({ from: params.from, to: params.to, item: params.item }, adj ? { adj } : {})); docs = da.st; no = da.item.no;
+      if (adj) { moves = D.moves; const i = (moves.list || []).findIndex(x => x.id === adj && x.t === 'adj'); if (i < 0) throw new Error('nf'); moves.list = moves.list.slice(); moves.list[i] = Object.assign({}, moves.list[i], { appr: no }); moves.at = now; } }
+    // مستند من الفهرس القديم لم يُنقل بعد: يُنقل إلى فهرس سنته قبل التوقيع (الفهرس القديم يبقى كما هو للقراءة)
+    if (!(docs.items || []).some(x => x.no === no)) { const old = DOCS.docsFind(null, X.legacy, no); if (!old) throw new Error('nf'); docs = Object.assign({}, docs, { items: [old].concat(docs.items || []) }); }
+    // أول توقيع يجمّد المحتوى المعروض: الطباعة بعده من هذه النسخة لا من البيانات الحية
+    const i0 = docs.items.findIndex(x => x.no === no); if (!(docs.items[i0].sigs || []).length && !docs.items[i0].snap) { docs = Object.assign({}, docs, { items: docs.items.slice() }); docs.items[i0] = Object.assign({}, docs.items[i0], { snap: DOCS.snapOf(docs.items[i0], D) }); }
+    const o = DOCS.sigAdd(docs, no, j, who, by, ua, now, owner); const SP = DOCS.sigsPath(o.year); const sd = DOCS.sigsPut(X.g(SP), no, o.sig, now);
+    await gas({ op: 'set', path: SP, data: sd }); await gas({ op: 'set', path: X.path, data: o.st }); if (moves) await gas({ op: 'set', path: 'live/moves', data: moves });   // الصورة أولًا: فهرس بلا صورة أهون من صورة بلا فهرس
+    await staffLog(who, 'sign', o.item.no + ' ' + o.sig.role + ' ' + o.sig.name + ' ' + o.sig.hash.slice(0, 10)); return { item: DOCS.sigMerge(o.item, sd), sig: o.sig };
+  });
+}
+const SIGN_CODE = { nf: 404, dup: 409, forbidden: 403, role: 400, png: 400, name: 400, params: 400, kind: 400 };
 async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترجع true إذا عالجت الطلب
   cors(req, res);
   const u = new URL(req.url, 'http://x'); const path = u.pathname; const json = (code, o) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(o)); };
@@ -448,13 +636,67 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
   const id = staffVerify((req.headers.authorization || '').replace(/^Bearer /i, '')); if (!id) return json(401, { ok: false, err: 'login' });
   const users = await staffList(); const me = users.find(x => x.id === id && x.active !== false); if (!me) return json(401, { ok: false, err: 'disabled' });
   const roles = Object.assign({}, me.roles || {}); if (!roles.count && roles.stock === 'edit') roles.count = 'edit';   // الجرد: من يعدّل المحاصيل يجرد
+  if (!roles.move && roles.stock === 'edit') roles.move = 'edit';   // حركة المخزون: من يعدّل المحاصيل يسجّل سحبًا وإضافة
   const can = (page, lvl) => roles[page] === 'edit' || (lvl === 'view' && roles[page] === 'view');
   if (path === '/staff/me') return json(200, { ok: true, user: { id: me.id, name: me.name, roles } });
   if (path === '/staff/docs' && req.method === 'GET') {   // قراءة المستندات المسموحة فقط
-    const want = String(u.searchParams.get('names') || '').split(',').filter(Boolean); const allowed = new Set(); for (const [pg, docs] of Object.entries(STAFF_PAGES)) if (can(pg, 'view')) docs.forEach(d => allowed.add(d));
+    const want = String(u.searchParams.get('names') || '').split(',').filter(Boolean); const allowed = new Set(); for (const [pg, docs] of Object.entries(STAFF_PAGES)) if (pg === '_any' || can(pg, 'view')) docs.forEach(d => allowed.add(d));   // _any: تنبيهات الحد الأدنى لكل موظف داخل
     const names = want.filter(n => allowed.has(n)); if (!names.length) return json(403, { ok: false, err: 'forbidden' });
-    try { const r = await gas({ op: 'get', paths: names.map(n => 'live/' + n) }); const out = {}; for (const n of names) { const d = r.docs && r.docs['live/' + n]; out[n] = d ? d.data : null; } if (out.crm_state) out.crm_state = { tpl: out.crm_state.tpl || {}, opt: out.crm_state.opt || {}, tag: out.crm_state.tag || {}, sent: out.crm_state.sent || {} }; return json(200, { ok: true, docs: out }); } catch (e) { return json(500, { ok: false, err: 'db' }); }
+    const YRS = [CY(), String(+CY() - 1)];   // قائمة المستندات: فهرس هذه السنة والسنة الماضية + الفهرس القديم (مدمجة تحت الاسم docs_out نفسه، فهرس السنة يغلب)
+    try { const r = await gas({ op: 'get', paths: names.filter(n => n !== 'staff_names').map(n => 'live/' + n).concat(names.includes('docs_out') ? YRS.map(DOCS.docsPath) : []) }); const out = {}; for (const n of names) { const d = r.docs && r.docs['live/' + n]; out[n] = d ? d.data : null; }
+      if (names.includes('docs_out')) { const yd = YRS.map(y => { const d = r.docs && r.docs[DOCS.docsPath(y)]; return d && d.data ? d.data : null; }); const L = DOCS.docsMerge({ items: DOCS.docsMerge(yd[0] || DOCS.docsSeed(out.docs_out, YRS[0]), yd[1]) }, out.docs_out); out.docs_out = L.length || out.docs_out ? { items: L } : null; } if (out.crm_state) out.crm_state = { tpl: out.crm_state.tpl || {}, opt: out.crm_state.opt || {}, tag: out.crm_state.tag || {}, sent: out.crm_state.sent || {} };
+      if (names.includes('staff_names')) out.staff_names = { users: users.filter(x => x.active !== false).map(x => ({ id: x.id, name: x.name, roles: Object.keys(x.roles || {}).filter(k => x.roles[k]) })) };   // أسماء الفريق وصفحاتهم لبطاقة المحمصة، بلا رموز
+      // قائمة العملاء: الموظف لا يرى مبالغ ولا تحويلات ولا نص الرسائل أبدًا. مع صفحة العملاء: الرقم كاملًا والطلبات (كمية وحالة فقط)؛ بدونها (التسليم في حركة المخزون): الاسم والنوع ورقم مقنّع فقط
+      if (out.customers) { const full = can('customers', 'view'); out.customers = { list: (out.customers.list || []).map(x => custStaff(x, full)) }; }
+      // فهرس الفواتير لمن ليس عنده صفحة الفواتير (الاستلام في حركة المخزون): بلا مبالغ، فقط المورد والتاريخ والرقم ووصف الأصناف (مع حذف أي مبلغ ورد في الوصف)
+      if (out.invoices && !can('invoices', 'view')) out.invoices = { items: (out.invoices.items || []).map(x => ({ id: x.id, at: x.at, date: x.date, supplier: x.supplier, invoice_no: x.invoice_no, items: DOCS.scrubAmounts(x.items), from: x.from, status: x.status })) };
+      if (out.suppliers) out.suppliers = { list: (out.suppliers.list || []).map(x => ({ id: x.id, name: x.name })) };   // أسماء الموردين فقط، بلا أسعار ولا فواتير
+      if (out.docs_out) out.docs_out = Object.assign({}, out.docs_out, { items: (out.docs_out.items || []).map(x => DOCS.sigStrip(x, null)) });   // التواقيع: الأسماء والبصمات فقط، بلا صور (الصور في مخزن منفصل) وبلا النسخة المجمّدة
+      if (out.stock) out.stock = Object.assign({}, out.stock, { items: (out.stock.items || []).map(x => ({ id: x.id, name: x.name, o: x.o, st: x.st, q: x.q, n: x.n })) });   // المحاصيل بلا أسعار شراء أو بيع (live/stock يحمل sell/buys للمالك)
+      return json(200, { ok: true, docs: out }); } catch (e) { return json(500, { ok: false, err: 'db' }); }
   }
+  if (path === '/staff/units' && req.method === 'GET') {   // سلالم الوحدات لكل صنف (المخزَّن مدموجًا مع الافتراضي) لمن يرى الوحدات أو الحركة أو الجرد
+    if (!(can('units', 'view') || can('move', 'view') || can('count', 'view'))) return json(403, { ok: false, err: 'forbidden' });
+    try { const r = await gas({ op: 'get', paths: ['live/units'] }); const d = r.docs && r.docs['live/units']; const doc = (d && d.data) || { items: {}, log: [] };
+      return json(200, { ok: true, keys: DALU.KEYS, items: DALU.merge(CITEMS, doc), log: (doc.log || []).slice(0, 50), at: doc.at || null, canEdit: can('units', 'edit') }); } catch (e) { return json(500, { ok: false, err: 'db' }); }
+  }
+  if (path === '/staff/units' && req.method === 'POST') { if (!can('units', 'edit')) return json(403, { ok: false, err: 'forbidden' });   // تعديل سلّم صنف: {sku, lad:[[key,factor|null],...]}
+    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); return await countQueue(async () => {
+      const r = await gas({ op: 'get', paths: ['live/units'] }); const d = r.docs && r.docs['live/units']; const doc = (d && d.data) || { items: {}, log: [] }; const now = new Date().toISOString();
+      const st = unitsApply(doc, j, me.name, now); if (st !== doc) { await gas({ op: 'set', path: 'live/units', data: st }); await staffLog(me.name, 'units', j.sku + ' ' + DALU.describe(st.items[j.sku].lad) + (st.items[j.sku].min != null ? ' min=' + st.items[j.sku].min : '')); if (j.min !== undefined) { const rm = await gas({ op: 'get', paths: ['live/moves'] }); const dm = rm.docs && rm.docs['live/moves']; await alertsRefresh(st, (dm && dm.data) || { list: [] }, now); } }
+      return json(200, { ok: true, keys: DALU.KEYS, items: DALU.merge(CITEMS, st), log: (st.log || []).slice(0, 50), at: st.at || null, canEdit: true }); }); } catch (e) { return json(400, { ok: false, err: String(e.message || e) }); } }
+  if (path === '/staff/move' && req.method === 'POST') { if (!can('move', 'edit')) return json(403, { ok: false, err: 'forbidden' });   // حركة مخزون: {op:'add', t:'out'|'in', s, lines:[{n,u}], sup:{id}|{new:1,name}, inv, lot, note} أو {op:'del', id}
+    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); return await countQueue(async () => {
+      const DP = DOCS.docsPath(CY()), DP1 = DOCS.docsPath(String(+CY() - 1)); const r = await gas({ op: 'get', paths: ['live/moves', 'live/units', 'live/suppliers', 'live/pending_items', 'live/customers', 'live/docs_out', 'live/invoices', DP, DP1] }); const g = n => { const d = r.docs && r.docs['live/' + n]; return (d && d.data) || null; }; const now = new Date().toISOString();
+      const pend = g('pending_items') || { items: [], suppliers: [] }; const dy = r.docs && r.docs[DP]; const docsY = dy && dy.data ? dy.data : DOCS.docsSeed(g('docs_out'), CY()); const dy1 = r.docs && r.docs[DP1];
+      const o = moveApply(g('moves') || { list: [] }, j, me.name, g('units') || { items: {} }, now, { sups: g('suppliers'), pend, custs: g('customers'), invs: g('invoices'), docs: { items: DOCS.docsMerge({ items: DOCS.docsMerge(docsY, dy1 && dy1.data) }, g('docs_out')) } });   // قفل المستند الموقّع: فهرس هذه السنة والماضية (رأس السنة) + القديم
+      // سند مرقّم تلقائيًا: استلام لكل دفعة من مورد حقيقي، وتسليم لكل سحب لعميل. يُطبع الآن أو لاحقًا بالرقم نفسه
+      const rec = o.rec; let docItem = null, docsOut = null;
+      if (j.op === 'add' && ((rec.t === 'in' && rec.sup && rec.sup.id !== INTERNAL_SUP.id && rec.sup.id !== ROAST_SUP.id) || (rec.t === 'out' && rec.cust))) {
+        const kind = rec.t === 'in' ? 'rec' : 'dlv'; const da = DOCS.docAdd(docsY, kind, { move: rec.id }, me.name, now, kind === 'rec' ? { sup: rec.sup.id, name: rec.sup.name, item: rec.s } : { cust: rec.cust.id, name: rec.cust.name, item: rec.s });
+        rec.doc = da.item.no; docItem = da.item; docsOut = da.st; }
+      // الفهرس قبل الحركات: إن فشل حفظ الفهرس لا تُحفظ حركة تحمل رقمًا غير مسجّل (وإلا تكرر الرقم في السند التالي). مخزن GAS ليس ذريًا بين المستندين؛ الطابور هنا يسلسل الكتابة داخل هذه الخدمة فقط
+      if (docsOut) await gas({ op: 'set', path: DP, data: docsOut });
+      await gas({ op: 'set', path: 'live/moves', data: o.st }); const alerts = await alertsRefresh(g('units'), o.st, now);
+      if (o.newSup || o.newCust) { if (o.newSup) pend.suppliers = [o.newSup].concat(pend.suppliers || []).slice(0, 100); if (o.newCust) pend.customers = [o.newCust].concat(pend.customers || []).slice(0, 200); pend.at = now; await gas({ op: 'set', path: 'live/pending_items', data: pend }); }
+      await staffLog(me.name, 'move', (j.op === 'del' ? 'تراجع ' : rec.t === 'out' ? (rec.cust ? 'تسليم ' : 'سحب ') : 'إضافة ') + rec.s + ' ' + rec.tot + ' ' + rec.base + (rec.sup ? ' من ' + rec.sup.name : '') + (rec.cust ? ' إلى ' + rec.cust.name : '') + (rec.inv ? ' فاتورة ' + (rec.invNo || rec.inv) : '') + (rec.doc ? ' ' + rec.doc : ''));
+      return json(200, { ok: true, moves: o.st, rec, events: o.events || [], pending: pend, alerts, doc: docItem, docs_out: docsOut ? { items: DOCS.docsMerge(docsOut, g('docs_out')).map(x => DOCS.sigStrip(x, null)) } : undefined }); }); } catch (e) { return json(e.message === 'signed' ? 409 : 400, { ok: false, err: String(e.message || e) }); } }
+  if (path === '/staff/sign' && req.method === 'POST') {   // توقيع إلكتروني {no, role, name, png}: صلاحية الحركة (تعديل) لسندات الاستلام/التسليم؛ «اعتماد» للمالك فقط (403 هنا دائمًا)
+    if (!can('move', 'edit')) return json(403, { ok: false, err: 'forbidden' });
+    try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); if (!j.no) return json(400, { ok: false, err: 'no' }); const o = await docSign(j, me.name, me.id, req.headers['user-agent'], false);
+      return json(200, { ok: true, doc: DOCS.sigStrip(o.item, me.id), sig: { role: o.sig.role, name: o.sig.name, at: o.sig.at, hash: o.sig.hash } }); }
+    catch (e) { return json(e.message === 'too-big' ? 413 : SIGN_CODE[e.message] || 500, { ok: false, err: String(e.message || e) }); } }
+  if (path === '/staff/doc' && req.method === 'POST') {   // مستند PDF: {kind:'mov'|'rec'|'dlv', params, lang} يُرقَّم ويُفهرس، أو {no} لإعادة طباعة مستند بالرقم نفسه
+    if (!(can('move', 'view') || can('roast', 'view'))) return json(403, { ok: false, err: 'forbidden' });
+    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); const out = await docPdf(j, me.name); res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="' + out.no + '.pdf"', 'X-Dal-Doc': out.no }); res.end(out.pdf); return true; }
+    catch (e) { return json(e.message === 'nf' || e.message === 'kind' || e.message === 'params' ? 400 : 500, { ok: false, err: String(e.message || e) }); } }
+  if (path === '/staff/pending' && req.method === 'POST') {   // صنف مؤقت {op:'add', ar, en, u, sup} / مورد مؤقت {op:'sup', name} (حركة · تعديل) / ربط {op:'link', id, sku} (الوحدات · تعديل)
+    try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); if (!can(j.op === 'link' ? 'units' : 'move', 'edit')) return json(403, { ok: false, err: 'forbidden' }); return await countQueue(async () => {
+      const r = await gas({ op: 'get', paths: ['live/pending_items', 'live/moves'] }); const g = n => { const d = r.docs && r.docs['live/' + n]; return (d && d.data) || null; }; const now = new Date().toISOString();
+      const o = pendingApply(g('pending_items') || { items: [], suppliers: [] }, j, me.name, now, g('moves') || { list: [] });
+      await gas({ op: 'set', path: 'live/pending_items', data: o.st }); if (o.moves) await gas({ op: 'set', path: 'live/moves', data: o.moves });
+      await staffLog(me.name, 'pending', j.op === 'add' ? 'صنف مؤقت ' + o.item.ar : j.op === 'sup' ? 'مورد مؤقت ' + o.sup.name : 'ربط ' + j.id + ' → ' + j.sku + ' (' + o.moved + ' حركة)');
+      return json(200, { ok: true, pending: o.st, item: o.item || null, sup: o.sup || null, moves: o.moves || null }); }); } catch (e) { return json(400, { ok: false, err: String(e.message || e) }); } }
   if (path === '/staff/invoice/upload' && req.method === 'POST') { if (!can('invoices', 'edit')) return json(403, { ok: false, err: 'forbidden' });
     try { const b = JSON.parse(await readBody(req, 25e6) || '{}'); b.meta = Object.assign({}, b.meta || {}, { src: 'staff', from: me.name }); const r = await fetch(RELAY + '/invoice/process', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': KEY }, body: JSON.stringify(b) }); const t = await r.text(); let rec = null; try { rec = JSON.parse(t).rec; } catch (e) {} await staffLog(me.name, 'invoice', rec ? (rec.supplier || '') + ' ' + (rec.total || '') + ' ' + rec.status : 'upload'); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(t); } catch (e) { json(500, { ok: false, err: String(e.message || e) }); } return true; }
   if (path === '/staff/stock' && req.method === 'POST') { if (!can('stock', 'edit')) return json(403, { ok: false, err: 'forbidden' });
@@ -463,26 +705,34 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
     try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); const r = await gas({ op: 'get', paths: ['live/crm_state'] }); const d = r.docs && r.docs['live/crm_state']; const st = Object.assign({ sent: {}, opt: {}, tag: {}, note: {}, tpl: {} }, (d && d.data) || {}); (st.sent[j.k] = st.sent[j.k] || {})[j.t || 'generic'] = new Date().toISOString().slice(0, 10); await gas({ op: 'set', path: 'live/crm_state', data: st }); await staffLog(me.name, 'message', (j.name || j.k) + ' · ' + (j.t || '')); return json(200, { ok: true }); } catch (e) { return json(500, { ok: false, err: 'db' }); } }
   if (path === '/staff/count' && req.method === 'POST') { if (!can('count', 'edit')) return json(403, { ok: false, err: 'forbidden' });   // الجرد بالكاميرا: سطر جرد / إعداد صنف / جرد جديد
     try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); return await countQueue(async () => {
-      const r = await gas({ op: 'get', paths: ['live/count_state'] }); const d = r.docs && r.docs['live/count_state']; const st = Object.assign({ cfg: {}, cur: null, hist: [] }, (d && d.data) || {});
+      const r = await gas({ op: 'get', paths: ['live/count_state', 'live/moves'] }); const d = r.docs && r.docs['live/count_state']; const st = Object.assign({ cfg: {}, cur: null, hist: [] }, (d && d.data) || {}); const mvd = r.docs && r.docs['live/moves']; let adj = null;
       const now = new Date().toISOString(); const sku = String(j.sku || '').slice(0, 40); const num = v => (v === '' || v == null || !isFinite(+v)) ? null : Math.round(+v * 10000) / 10000;
       if (!st.cur) st.cur = { id: 'C' + now.slice(0, 10).replace(/-/g, '') + '-' + now.slice(11, 16).replace(':', ''), started: now, by: me.name, lines: {} };
-      if (j.op === 'line') { if (!sku) throw new Error('sku'); if (j.del) delete st.cur.lines[sku]; else { const q = num(j.q); if (q == null || q < 0) throw new Error('qty'); st.cur.lines[sku] = { q, c: num(j.c), pc: num(j.pc), l: num(j.l), w: Array.isArray(j.w) ? j.w.slice(0, 60).map(num).filter(x => x != null) : null, b: num(j.b), t: num(j.t), note: String(j.note || '').slice(0, 120), r: j.r ? String(j.r).slice(0, 40) : undefined, q0: num(j.q0), nf: j.nf ? 1 : undefined, by: me.name, at: now }; } await staffLog(me.name, 'count', sku + ' = ' + (j.del ? 'حذف' : j.q)); }
+      if (j.op === 'line') { if (!sku) throw new Error('sku'); if (j.del) delete st.cur.lines[sku]; else { const q = num(j.q); if (q == null || q < 0) throw new Error('qty'); st.cur.lines[sku] = { q, c: num(j.c), pc: num(j.pc), l: num(j.l), w: Array.isArray(j.w) ? j.w.slice(0, 60).map(num).filter(x => x != null) : null, b: num(j.b), t: num(j.t), ul: Array.isArray(j.ul) ? j.ul.slice(0, 20).map(x => ({ n: num(x && x.n), u: String((x && x.u) || '').slice(0, 12) })).filter(x => x.n > 0 && DALU.KEYS.includes(x.u)) : undefined, note: String(j.note || '').slice(0, 120), r: j.r ? String(j.r).slice(0, 40) : undefined, q0: num(j.q0), nf: j.nf ? 1 : undefined, by: me.name, at: now }; } await staffLog(me.name, 'count', sku + ' = ' + (j.del ? 'حذف' : j.q));
+        if (!j.del && !j.nf) { const ca = countAdjust((mvd && mvd.data) || { list: [] }, sku, num(j.q), me.name, now, st.cur.id); if (ca.rec) { adj = ca.rec; await gas({ op: 'set', path: 'live/moves', data: ca.st }); await staffLog(me.name, 'move', 'فرق جرد ' + sku + ' ' + (adj.n > 0 ? '+' : '') + adj.n); const ru = await gas({ op: 'get', paths: ['live/units'] }); const du = ru.docs && ru.docs['live/units']; await alertsRefresh((du && du.data) || { items: {} }, ca.st, now); } } }
       else if (j.op === 'cfg') { if (!sku) throw new Error('sku'); const c = st.cfg[sku] = Object.assign({}, st.cfg[sku] || {}); if (j.pc !== undefined) c.pc = num(j.pc); if (j.t !== undefined) c.t = num(j.t); if (j.loc !== undefined) c.loc = String(j.loc || '').slice(0, 30); if (j.z !== undefined) c.z = String(j.z || '').slice(0, 30); if (j.sh !== undefined) c.sh = String(j.sh || '').slice(0, 30); if (j.o !== undefined) c.o = num(j.o); if (j.min !== undefined) c.min = num(j.min); }
       else if (j.op === 'order') { const L = Array.isArray(j.skus) ? j.skus.slice(0, 200) : []; L.forEach((k, i) => { k = String(k).slice(0, 40); const c = st.cfg[k] = Object.assign({}, st.cfg[k] || {}); c.o = i + 1; if (j.sh) c.sh = String(j.sh).slice(0, 30); if (j.z) c.z = String(j.z).slice(0, 30); }); }
       else if (j.op === 'place') { const p = String(j.p || '').slice(0, 30); if (!p) throw new Error('place'); st.cur.places = st.cur.places || {}; const P = st.cur.places[p] = Object.assign({}, st.cur.places[p] || {}); if (j.act === 'send') { P.sent = now; P.sentBy = me.name; P.mins = num(j.mins); P.n = num(j.n); } else if (j.act === 'reopen') { delete P.sent; } }
       else if (j.op === 'waste') { if (!sku) throw new Error('sku'); const q = num(j.q); if (q == null || q <= 0) throw new Error('qty'); st.waste = [{ sku, q, r: String(j.r || '').slice(0, 40), note: String(j.note || '').slice(0, 120), by: me.name, at: now }].concat(st.waste || []).slice(0, 400); await staffLog(me.name, 'waste', sku + ' = ' + q); }
       else if (j.op === 'new') { if (st.cur && Object.keys(st.cur.lines || {}).length) { st.cur.closed = now; st.cur.closedBy = me.name; st.hist = [st.cur].concat(st.hist || []).slice(0, 12); } st.cur = { id: 'C' + now.slice(0, 10).replace(/-/g, '') + '-' + now.slice(11, 16).replace(':', ''), started: now, by: me.name, lines: {} }; await staffLog(me.name, 'count', 'جرد جديد'); }
       else throw new Error('op');
-      st.at = now; await gas({ op: 'set', path: 'live/count_state', data: st }); return json(200, { ok: true, state: st });
+      st.at = now; await gas({ op: 'set', path: 'live/count_state', data: st }); return json(200, { ok: true, state: st, adj });
     }); } catch (e) { return json(400, { ok: false, err: String(e.message || e) }); } }
-  if (path === '/staff/roast' && req.method === 'POST') {   // سجل التحميص: دال في live/roast_log والعملاء الخارجيين في live/roast_ext — مستندان منفصلان بصلاحيتين
-    try { const j = JSON.parse(await readBody(req, 2e4) || '{}'); const X = j.t === 'ext'; if (!can(X ? 'roastx' : 'roast', 'edit')) return json(403, { ok: false, err: 'forbidden' }); const P = X ? 'live/roast_ext' : 'live/roast_log'; const r = await gas({ op: 'get', paths: [P] }); const d = r.docs && r.docs[P]; const lg = Object.assign({ list: [] }, (d && d.data) || {}); const now = new Date().toISOString(); const n = v => { const x = Number(v); return isFinite(x) ? Math.round(x * 1000) / 1000 : null; };
-      if (j.op === 'add') { const t = X ? 'ext' : 'dal'; const g = n(j.g), rr = n(j.r); if (!(g > 0) || !(rr > 0) || rr > g || g > 200) throw new Error('weight'); if (t === 'dal' && !j.o) throw new Error('origin'); if (t === 'ext' && !String(j.c || '').trim()) throw new Error('customer');
-        const it = { id: 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t, o: t === 'dal' ? String(j.o).slice(0, 60) : undefined, on: t === 'dal' ? String(j.on || '').slice(0, 80) : undefined, c: t === 'ext' ? String(j.c).slice(0, 80) : undefined, g, r: rr, n: String(j.n || '').slice(0, 120) || undefined, by: me.name, at: now };
-        lg.list = [it].concat(lg.list || []).slice(0, 3000); await staffLog(me.name, 'roast', (t === 'ext' ? 'خارجي ' + it.c : it.on || it.o) + ' ' + g + '→' + rr); }
-      else if (j.op === 'del') { const it = (lg.list || []).find(x => x.id === j.id); if (!it) throw new Error('nf'); const dd = x => new Date(new Date(x).getTime() + 3 * 3600e3).toISOString().slice(0, 10); if (dd(it.at) !== dd(now)) return json(403, { ok: false, err: 'الحذف لدفعات اليوم فقط' }); lg.list = lg.list.filter(x => x.id !== j.id); await staffLog(me.name, 'roast', 'حذف دفعة ' + (it.on || it.c || '') + ' ' + it.g + '→' + it.r); }
+  if (path === '/staff/roast' && req.method === 'POST') {   // سجل التحميص: دال في live/roast_log والعملاء الخارجيين في live/roast_ext — مستندان منفصلان بصلاحيتين. دفعات دال فقط تحرّك المخزون (أخضر ← محمّص)
+    try { const j = JSON.parse(await readBody(req, 2e4) || '{}'); const X = j.t === 'ext'; if (!can(X ? 'roastx' : 'roast', 'edit')) return json(403, { ok: false, err: 'forbidden' }); const P = X ? 'live/roast_ext' : 'live/roast_log'; return await countQueue(async () => {
+      const r = await gas({ op: 'get', paths: X ? [P] : [P, 'live/moves', 'live/units'] }); const d = r.docs && r.docs[P]; const lg = Object.assign({ list: [] }, (d && d.data) || {}); const now = new Date().toISOString(); const n = v => { const x = Number(v); return isFinite(x) ? Math.round(x * 1000) / 1000 : null; };
+      const mvd = !X && r.docs && r.docs['live/moves']; const und = !X && r.docs && r.docs['live/units']; let moves = (mvd && mvd.data) || { list: [] }; const units = (und && und.data) || { items: {} }; let mvChanged = false, extra = {};
+      if (j.op === 'add') { const t = X ? 'ext' : 'dal'; const g = n(j.g), rr = n(j.r); if (!(g > 0) || !(rr > 0) || rr > g || g > 200) throw new Error('weight');
+        let gi = null; if (t === 'dal') { gi = citem(String(j.gs || '')); if (!gi || !DALU.ROAST_MAP[gi.s]) throw new Error('origin'); } if (t === 'ext' && !String(j.c || '').trim()) throw new Error('customer');
+        const it = { id: 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), t, gs: t === 'dal' ? gi.s : undefined, rs: t === 'dal' ? DALU.ROAST_MAP[gi.s] : undefined, o: t === 'dal' ? String(j.o || gi.s).slice(0, 60) : undefined, on: t === 'dal' ? gi.ar : undefined, c: t === 'ext' ? String(j.c).slice(0, 80) : undefined, g, r: rr, n: String(j.n || '').slice(0, 120) || undefined, by: me.name, at: now };
+        if (t === 'dal') { const rm = roastMoves(moves, it, me.name, units, now, j.lot ? String(j.lot) : ''); moves = rm.st; it.mv = [rm.out.id, rm.inn.id]; if (rm.nolot) it.nolot = 1; mvChanged = true; extra = { out: rm.out, inn: rm.inn, events: rm.events, nolot: rm.nolot }; }
+        lg.list = [it].concat(lg.list || []).slice(0, 3000); await staffLog(me.name, 'roast', (t === 'ext' ? 'خارجي ' + it.c : it.on || it.o) + ' ' + g + '→' + rr + (it.nolot ? ' (بلا دفعة أخضر)' : '')); }
+      else if (j.op === 'del') { const it = (lg.list || []).find(x => x.id === j.id); if (!it) throw new Error('nf'); const dd = x => new Date(new Date(x).getTime() + 3 * 3600e3).toISOString().slice(0, 10); if (dd(it.at) !== dd(now)) return json(403, { ok: false, err: 'الحذف لدفعات اليوم فقط' });
+        if (!X && it.mv && it.mv.length) { moves = roastUndo(moves, it, me.name, now); mvChanged = true; }
+        lg.list = lg.list.filter(x => x.id !== j.id); await staffLog(me.name, 'roast', 'حذف دفعة ' + (it.on || it.c || '') + ' ' + it.g + '→' + it.r); }
       else throw new Error('op');
-      lg.at = now; await gas({ op: 'set', path: P, data: lg }); return json(200, { ok: true, log: lg }); } catch (e) { return json(400, { ok: false, err: e.message || 'error' }); } }
+      lg.at = now; await gas({ op: 'set', path: P, data: lg }); if (mvChanged) { await gas({ op: 'set', path: 'live/moves', data: moves }); extra.alerts = await alertsRefresh(units, moves, now); extra.moves = moves; }
+      return json(200, Object.assign({ ok: true, log: lg }, extra)); }); } catch (e) { return json(400, { ok: false, err: e.message === 'used' ? 'المحمّص من هذه الدفعة سُحب منه، لا يمكن التراجع' : (e.message || 'error') }); } }
   if (path === '/staff/log' && req.method === 'POST') { try { const j = JSON.parse(await readBody(req, 1e5) || '{}'); await staffLog(me.name, String(j.action || 'note').slice(0, 30), j.detail); return json(200, { ok: true }); } catch (e) { return json(400, { ok: false }); } }
   return json(404, { ok: false, err: 'no' });
 }
@@ -566,6 +816,13 @@ const srv = http.createServer((req, res) => {
     })();
   }
   cors(req, res);
+  if (req.method === 'POST' && req.url === '/sign') {   // المالك: توقيع «اعتماد» على مستند {no, role:'appr', name, png} أو على فرق جرد {kind:'mov', params:{from,to,item}, adj, role:'appr', name, png}
+    return (async () => { try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); if (j.role !== 'appr') throw new Error('role'); const o = await docSign(j, String(j.name || 'المالك').slice(0, 80), 'owner', req.headers['user-agent'], true); res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: true, doc: o.item, sig: o.sig })); }
+      catch (e) { res.writeHead(e.message === 'too-big' ? 413 : SIGN_CODE[e.message] || 500, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
+  }
+  if (req.url.startsWith('/doc')) {   // المالك: المستند نفسه الذي يطبعه الفريق (POST {kind,params,lang} أو {no}؛ GET ?no=…&lang=…)
+    return (async () => { try { const u = new URL(req.url, 'http://x'); const j = req.method === 'POST' ? JSON.parse(await readBody(req, 1e5) || '{}') : { no: u.searchParams.get('no'), lang: u.searchParams.get('lang') }; const out = await docPdf(j, 'المالك'); res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="' + out.no + '.pdf"', 'X-Dal-Doc': out.no, 'Access-Control-Expose-Headers': 'X-Dal-Doc' }); res.end(out.pdf); } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
+  }
   if (req.method === 'POST' && req.url === '/invoice/upload') {   // رفع يدوي من التطبيق → الناقل يقرأ ويفحص → يرجع هنا للتخزين
     return (async () => { try { const b = await readBody(req, 25e6); const r = await fetch(RELAY + '/invoice/process', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dal-key': KEY }, body: b }); const t = await r.text(); res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(t); } catch (e) { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
   }
@@ -598,5 +855,7 @@ const srv = http.createServer((req, res) => {
   proxy.web(req, res);
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
+if (require.main !== module) { module.exports = { unitsApply, moveApply, countAdjust, pendingApply, roastMoves, roastUndo, alertsCompute, STAFF_PAGES, DALU, CITEMS, DOCS, docPdf, docSign, docsRead, srv }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
 launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+}

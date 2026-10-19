@@ -210,6 +210,12 @@ const srv = http.createServer((req, res) => {
     }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
     return;
   }
+  if (req.method === 'POST' && req.url === '/push/send') {   // إشعار من متصفح دال (بمفتاح): تنبيهات حدود المخزون وغيرها
+    if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
+    let b = ''; req.on('data', c => { b += c; if (b.length > 1e5) req.destroy(); });
+    req.on('end', () => { let j = {}; try { j = JSON.parse(b || '{}'); } catch (e) {} pusher.reloadSubs().then(() => pusher.push({ title: String(j.title || 'دال').slice(0, 120), msg: String(j.msg || '').slice(0, 900), lv: j.lv || 'warn', tag: String(j.tag || 'dal').slice(0, 60), click: j.click })).then(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, status: pusher.status() })); }).catch(e => { res.writeHead(500); res.end(String(e.message)); }); });
+    return;
+  }
   if (req.method === 'POST' && req.url === '/push/test') {   // إشعار تجربة
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     pusher.reloadSubs().then(() => pusher.push({ title: 'دال', msg: 'تجربة الإشعارات ✅ ' + new Date().toLocaleTimeString('ar-SA-u-nu-latn', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Riyadh' }), lv: 'info', tag: 'white_check_mark' })).then(() => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(pusher.status())); });
