@@ -772,7 +772,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [] })); }
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], fcounts: { at: FC.at, err: FC.err, probe: FC.probe } })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -880,7 +880,41 @@ const srv = http.createServer((req, res) => {
   proxy.web(req, res);
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
-if (require.main !== module) { module.exports = { unitsApply, moveApply, countAdjust, pendingApply, roastMoves, roastUndo, alertsCompute, STAFF_PAGES, DALU, CITEMS, DOCS, docPdf, docSign, docsRead, srv }; } else {
+// ===== جرد فودكس: يقرأ آخر عمليات الجرد من كونسول فودكس (جلسة المتصفح، قراءة فقط) → live/foodics_counts للمالك، وإشعار عند جرد جديد =====
+const FCF = '/data/foodics_counts.json'; let FC = { notified: [], probe: null, at: null, err: null }; try { FC = Object.assign(FC, JSON.parse(fs.readFileSync(FCF, 'utf8'))); } catch (e) {}
+const fcSave = () => { try { fs.writeFileSync(FCF, JSON.stringify({ notified: FC.notified.slice(-50) })); } catch (e) {} };
+function fcNum(v) { const n = typeof v === 'string' ? parseFloat(v) : v; return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : null; }
+function fcName(o) { if (!o) return ''; const ar = s => /[؀-ۿ]/.test(s || ''); return (ar(o.name) ? o.name : ar(o.name_localized) ? o.name_localized : (o.name || o.name_localized || '')).trim(); }
+function fcItems(raw) {   // يبحث عن مصفوفة أصناف الجرد في أي شكل يرجعه الكونسول ويطبّعها
+  const arrs = []; const walk = (x, d) => { if (!x || d > 4) return; if (Array.isArray(x)) { if (x.length && typeof x[0] === 'object' && x[0] && ('quantity' in x[0] || 'entered_quantity' in x[0] || 'counted_quantity' in x[0])) arrs.push(x); x.slice(0, 3).forEach(y => walk(y, d + 1)); } else if (typeof x === 'object') Object.values(x).forEach(y => walk(y, d + 1)); };
+  walk(raw, 0); const list = arrs.sort((a, b) => b.length - a.length)[0] || []; return list.map(x => { const it = x.inventory_item || x.item || x.product || {}; const counted = fcNum(x.quantity ?? x.entered_quantity ?? x.counted_quantity); const orig = fcNum(x.original_quantity ?? x.system_quantity ?? x.expected_quantity ?? x.theoretical_quantity); const varq = fcNum(x.variance ?? x.variance_quantity) ?? (counted != null && orig != null ? Math.round((counted - orig) * 10000) / 10000 : null); return { name: fcName(it) || fcName(x), sku: it.sku || x.sku || '', unit: it.storage_unit || x.unit || '', counted, orig, var: varq, cost: fcNum(x.variance_cost ?? x.cost_variance), c: Object.keys(x).join(',').slice(0, 200) }; }); }
+async function readFoodicsCounts() {
+  if (!ctx) return; const p = await ctx.newPage(); const out = { at: new Date().toISOString(), list: [] }; let via = null;
+  try {
+    await p.goto('https://console.foodics.com/inventory/InventoryCounts', { waitUntil: 'domcontentloaded', timeout: 30000 }); await p.waitForTimeout(1500);
+    if (/login|auth|signin/i.test(p.url())) throw new Error('needLogin');
+    const G = async (u) => p.evaluate(async u => { const r = await fetch(u, { credentials: 'include', headers: { Accept: 'application/json' } }); const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {} return { s: r.status, j }; }, u);
+    const L = await G('/core-api/listing?url=/inventory_counts&page=1&with_total=true&include[]=branch&include[]=creator&include[]=user');
+    const counts = (L.j && (L.j.data || L.j.items)) || []; if (!Array.isArray(counts) || !counts.length) throw new Error('no-counts:' + L.s);
+    const recent = counts.slice().sort((a, b) => String(b.created_at || b.updated_at || '').localeCompare(String(a.created_at || a.updated_at || ''))).slice(0, 3);
+    for (const c of recent) {
+      const id = c.id || c.reference; let items = [], tried = [];
+      for (const u of ['/core-api/inventory_counts/' + id + '?include[]=items.inventory_item&include[]=creator', '/core-api/listing?url=/inventory_counts/' + id + '/items&include[]=inventory_item&with_total=true', '/core-api/listing?url=/inventory_count_items&filter[inventory_count_id]=' + id + '&include[]=inventory_item&with_total=true', '/core-api/inventory_counts/' + id]) {
+        const r = await G(u).catch(e => ({ s: 0 })); tried.push(u.replace(id, '<id>').split('?')[0] + ':' + r.s); if (r.s === 200 && r.j) { items = fcItems(r.j); if (items.length) { via = u.replace(id, '<id>'); break; } }
+      }
+      const who = c.creator || c.user || c.created_by || {}; const st = c.status != null ? c.status : (c.submitted_at ? 'submitted' : c.closed_at ? 'closed' : 'draft');
+      out.list.push({ id, ref: c.reference || c.number || '', status: st, created_at: c.created_at || null, submitted_at: c.submitted_at || c.closed_at || null, by: who.name || who.full_name || '', branch: c.branch && c.branch.name || '', n: items.length, variances: items.filter(x => x.var).length, items: items.map(x => ({ name: x.name, sku: x.sku, unit: x.unit, counted: x.counted, orig: x.orig, var: x.var, cost: x.cost })), tried: items.length ? undefined : tried, keys: items[0] ? items[0].c : undefined });
+    }
+    FC.probe = { via, keys: (out.list[0] && out.list[0].keys) || null, tried: (out.list[0] && out.list[0].tried) || null }; FC.at = out.at; FC.err = null;
+    if (GAS && KEY) await gas({ op: 'set', path: 'live/foodics_counts', data: Object.assign({ via }, out) }).catch(e => console.log('gas', e.message));
+    const latest = out.list[0]; if (latest && latest.n && !FC.notified.includes(String(latest.id))) {   // جرد جديد (أول مرة نراه): إشعار واحد
+      const top = latest.items.filter(x => x.var).sort((a, b) => Math.abs(b.var) - Math.abs(a.var)).slice(0, 3).map(x => x.name + ' ' + (x.var > 0 ? '+' : '') + x.var + (x.unit ? ' ' + x.unit : '')).join('، ');
+      await notifyOwner('جرد فودكس', (latest.by ? latest.by + ' · ' : '') + latest.n + ' صنف · ' + latest.variances + ' فرق' + (top ? ' — أكبرها: ' + top : '') + ' · ' + DOCS.fmtDay(latest.submitted_at || latest.created_at || out.at, 'ar').full + ' (' + (latest.status || '') + ')', 'fcount-' + latest.id); FC.notified.push(String(latest.id)); fcSave();
+    }
+    console.log('foodics counts', out.list.length, 'via', via);
+  } catch (e) { FC.err = String(e.message || e).slice(0, 120); FC.at = out.at; console.log('foodics counts err', FC.err); } finally { await p.close().catch(() => {}); }
+}
+if (require.main !== module) { module.exports = { unitsApply, moveApply, countAdjust, pendingApply, roastMoves, roastUndo, alertsCompute, STAFF_PAGES, DALU, CITEMS, DOCS, docPdf, docSign, docsRead, srv, fcItems }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(readFoodicsCounts, 90e3); setInterval(readFoodicsCounts, 10 * 60e3); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }
