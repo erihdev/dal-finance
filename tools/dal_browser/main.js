@@ -908,7 +908,12 @@ async function readFoodicsCounts() {
       const who = c.creator || c.user || c.created_by || {}; const st = c.status != null ? c.status : (c.submitted_at ? 'submitted' : c.closed_at ? 'closed' : 'draft');
       out.list.push({ id, ref: c.reference || c.number || '', status: st, created_at: c.created_at || null, submitted_at: c.submitted_at || c.closed_at || null, by: who.name || who.full_name || '', branch: c.branch && c.branch.name || '', n: items.length, variances: items.filter(x => x.var).length, items: items.map(x => ({ name: x.name, sku: x.sku, unit: x.unit, counted: x.counted, orig: x.orig, var: x.var, cost: x.cost })), tried: items.length ? undefined : tried, keys: items[0] ? items[0].c : undefined });
     }
-    FC.probe = Object.assign({}, FC.probe, { via, keys: (out.list[0] && out.list[0].keys) || null, tried: (out.list[0] && out.list[0].tried) || null }); FC.at = out.at; FC.err = null;
+    FC.probe = Object.assign({}, FC.probe, { via, keys: (out.list[0] && out.list[0].keys) || null, tried: (out.list[0] && out.list[0].tried) || null, latest: out.list[0] ? { status: out.list[0].status, n: out.list[0].n, items_index: recent[0] && recent[0].items_index } : null });
+    if (out.list[0] && !out.list[0].n && !(FC.probe.pageCalls || []).length) {   // اكتشاف مرة واحدة: أي واجهات تناديها صفحة الجرد في الكونسول (عناوين فقط)
+      const calls = []; const q = await ctx.newPage(); q.on('response', r => { const ru = r.url(); if (/core-api|api\./.test(ru) && !/\.(js|css|png|woff)/.test(ru)) calls.push(r.request().method() + ' ' + ru.replace(/https?:\/\/[^/]+/, '').replace(out.list[0].id, '<id>').slice(0, 160) + ' ' + r.status()); });
+      try { await q.goto('https://console.foodics.com/inventory/InventoryCounts/' + out.list[0].id, { waitUntil: 'domcontentloaded', timeout: 30000 }); await q.waitForTimeout(8000); } catch (e) { calls.push('err ' + String(e.message || e).slice(0, 80)); } finally { await q.close().catch(() => {}); }
+      FC.probe.pageCalls = calls.slice(0, 25);
+    } FC.at = out.at; FC.err = null;
     if (GAS && KEY) await gas({ op: 'set', path: 'live/foodics_counts', data: Object.assign({ via }, out) }).catch(e => console.log('gas', e.message));
     const latest = out.list[0]; if (latest && latest.n && !FC.notified.includes(String(latest.id))) {   // جرد جديد (أول مرة نراه): إشعار واحد
       const top = latest.items.filter(x => x.var).sort((a, b) => Math.abs(b.var) - Math.abs(a.var)).slice(0, 3).map(x => x.name + ' ' + (x.var > 0 ? '+' : '') + x.var + (x.unit ? ' ' + x.unit : '')).join('، ');
