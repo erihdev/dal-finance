@@ -894,8 +894,11 @@ async function readFoodicsCounts() {
     await p.goto('https://console.foodics.com/inventory/InventoryCounts', { waitUntil: 'domcontentloaded', timeout: 30000 }); await p.waitForTimeout(1500);
     if (/login|auth|signin/i.test(p.url())) throw new Error('needLogin');
     const G = async (u) => p.evaluate(async u => { const r = await fetch(u, { credentials: 'include', headers: { Accept: 'application/json' } }); const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (e) {} return { s: r.status, j }; }, u);
-    const L = await G('/core-api/listing?url=/inventory_counts&page=1&with_total=true&include[]=branch&include[]=creator&include[]=user');
-    const counts = (L.j && (L.j.data || L.j.items)) || []; if (!Array.isArray(counts) || !counts.length) throw new Error('no-counts:' + L.s);
+    let L = null, counts = [], lu = null; const dig = j => { if (!j) return []; if (Array.isArray(j)) return j; if (Array.isArray(j.data)) return j.data; if (j.data && Array.isArray(j.data.data)) return j.data.data; if (Array.isArray(j.items)) return j.items; return []; };
+    for (const u of ['/core-api/listing?url=/inventory_counts&page=1&with_total=true&include[]=branch&include[]=creator', '/core-api/listing?url=/inventory_counts&page=1', '/core-api/listing?url=/inventory_counts&page=1&with_total=true&sort=-created_at', '/core-api/inventory_counts?page=1&include[]=branch', '/core-api/listing?url=/inventory-counts&page=1']) {
+      L = await G(u).catch(e => ({ s: 0 })); counts = dig(L.j); FC.probe = Object.assign({}, FC.probe, { listTried: ((FC.probe && FC.probe.listTried) || []).concat([u.split('?')[0] + ':' + L.s + ':' + (L.j ? Object.keys(L.j).join('|').slice(0, 80) : '-') + ':' + counts.length]).slice(-6) }); if (counts.length) { lu = u; break; }
+    }
+    if (!counts.length) throw new Error('no-counts:' + (L && L.s)); FC.probe.list = lu; FC.probe.countKeys = Object.keys(counts[0]).join(',').slice(0, 300);
     const recent = counts.slice().sort((a, b) => String(b.created_at || b.updated_at || '').localeCompare(String(a.created_at || a.updated_at || ''))).slice(0, 3);
     for (const c of recent) {
       const id = c.id || c.reference; let items = [], tried = [];
