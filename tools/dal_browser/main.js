@@ -578,6 +578,7 @@ function pendingApply(doc, j, who, now, movesDoc) {
   throw new Error('op');
 }
 const loginHits = new Map();   // ip -> [timestamps]
+const forgotHits = new Map();   // ip -> [timestamps] لطلبات «نسيت الرمز»
 function staffToken(id, exp) { return id + '.' + exp + '.' + crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40); }
 function staffVerify(tok) { const [id, exp, sig] = String(tok || '').split('.'); if (!id || !exp || !sig) return null; if (+exp < Date.now()) return null; const ok = crypto2.timingSafeEqual(Buffer.from(sig), Buffer.from(crypto2.createHmac('sha256', KEY).update(id + '|' + exp).digest('hex').slice(0, 40))); return ok ? id : null; }
 // إسقاط العميل لنسخة الموظف: بلا مبالغ (amount/price)، بلا تحويلات، بلا نص رسائل، بلا حقائق المالك؛ full = عنده صفحة العملاء (الرقم كاملًا والطلبات كميةً وحالةً)
@@ -647,6 +648,15 @@ async function staffRoute(req, res) {   // كل مسارات /staff/* ؛ ترج�
       const exp = now + 30 * 864e5; await staffLog(uu.name, 'login', ''); return json(200, { ok: true, token: staffToken(uu.id, exp), user: { id: uu.id, name: uu.name, roles: uu.roles || {} } }); } catch (e) { return json(400, { ok: false, err: 'bad' }); }
   }
   if (path === '/staff/users' && req.method === 'GET') { const users = await staffList(); return json(200, { ok: true, users: users.filter(x => x.active !== false).map(x => ({ id: x.id, name: x.name })) }); }   // أسماء فقط لشاشة الدخول
+  if (path === '/staff/forgot' && req.method === 'POST') {   // نسيت الرمز: يُسجَّل طلب للمالك (live/staff_pinreq) ويصله إشعار؛ المالك يصدر رمزًا جديدًا من صفحة المستخدمين. لا رمز يُرسل آليًا.
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || ''; const now = Date.now(); const h = (forgotHits.get(ip) || []).filter(t => now - t < 3600e3); if (h.length >= 5) return json(429, { ok: false, err: 'many' }); h.push(now); forgotHits.set(ip, h);
+    try { const j = JSON.parse(await readBody(req, 1e4) || '{}'); const users = await staffList(); const uu = users.find(x => x.id === j.id && x.active !== false); if (!uu) return json(404, { ok: false, err: 'user' });
+      const r = await gas({ op: 'get', paths: ['live/staff_pinreq'] }).catch(() => ({})); const d = r.docs && r.docs['live/staff_pinreq']; const items = (d && d.data && Array.isArray(d.data.items)) ? d.data.items : [];
+      const prev = items.find(x => x.id === uu.id); if (prev && now - Date.parse(prev.at) < 10 * 60e3) return json(200, { ok: true, again: true });   // طلب قائم خلال 10 دقائق: لا تكرار للإشعار
+      const nowIso = new Date(now).toISOString(); const next = items.filter(x => x.id !== uu.id).concat([{ id: uu.id, name: uu.name, at: nowIso }]).slice(-50);
+      await gas({ op: 'set', path: 'live/staff_pinreq', data: { at: nowIso, items: next } }); await staffLog(uu.name, 'forgot', ''); await notifyOwner('نسي الرمز', uu.name + ' يطلب رمز دخول جديد · ' + DOCS.fmtDay(nowIso, 'ar').full + ' — أصدره من «فريق العمل» وأرسله له', 'pinreq-' + uu.id);
+      return json(200, { ok: true }); } catch (e) { return json(400, { ok: false, err: 'bad' }); }
+  }
   const id = staffVerify((req.headers.authorization || '').replace(/^Bearer /i, '')); if (!id) return json(401, { ok: false, err: 'login' });
   const users = await staffList(); const me = users.find(x => x.id === id && x.active !== false); if (!me) return json(401, { ok: false, err: 'disabled' });
   const roles = Object.assign({}, me.roles || {}); if (!roles.count && roles.stock === 'edit') roles.count = 'edit';   // الجرد: من يعدّل المحاصيل يجرد

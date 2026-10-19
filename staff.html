@@ -117,7 +117,14 @@ async function loginView(){if(!USERS){$('#m').innerHTML=`<div class="login"><img
   $('#m').innerHTML=`<div class="login"><img src="icon-180.png" alt=""><h1>${T('فريق دال','Dal Team')}</h1><p class="sub">${T('اختر اسمك وأدخل رمزك.','Choose your name and enter your PIN.')}</p>
   <div class="grp"><label for="uid" class="sub" style="display:block;margin:0">${T('الاسم','Name')}</label><select id="uid">${USERS.map(u=>`<option value="${esc(u.id)}" ${u.id===UID?'selected':''}>${esc(u.name)}</option>`).join('')}</select>
   <label for="pin" class="sub" style="display:block;margin:8px 0 0">${T('الرمز','PIN')}</label><input id="pin" type="password" inputmode="numeric" autocomplete="current-password" value="${esc(pin)}">
-  <div class="err" id="err"></div><button class="btn" id="go">${T('دخول','Sign in')}</button></div></div>`;}
+  <div class="err" id="err"></div><button class="btn" id="go">${T('دخول','Sign in')}</button>
+  <button class="lnk" id="forgot" type="button" style="display:block;width:100%;margin-top:10px;background:none;border:0;color:var(--acc-ink);font:inherit;font-size:14px;cursor:pointer">${T('نسيت الرمز؟','Forgot your PIN?')}</button><div class="sub" id="forgot-msg" style="margin-top:6px;font-size:13px;line-height:1.5"></div></div></div>`;}
+async function doForgot(){const b=$('#forgot'),m=$('#forgot-msg');if(!b||b.disabled)return;const id=($('#uid')||{}).value;if(!id){m.textContent=T('اختر اسمك أولاً','Choose your name first');return;}
+  if(!confirm(T('يُرسل طلب للمدير ليصدر لك رمزاً جديداً. متابعة؟','A request goes to the manager to issue you a new PIN. Continue?')))return;b.disabled=true;m.textContent='';
+  try{const res=await fetch(SRV+'/staff/forgot',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id})});const r=await res.json().catch(()=>({}));
+    if(res.status===429)throw new Error(T('طلبات كثيرة، انتظر ساعة','Too many requests. Wait one hour.'));if(!r.ok)throw new Error(T('تعذّر إرسال الطلب','Could not send the request'));
+    m.textContent=r.again?T('طلبك مسجّل من قبل؛ المدير سيرسل لك الرمز الجديد على واتساب.','Your request is already recorded; the manager will send you the new PIN on WhatsApp.'):T('وصل الطلب للمدير. سيرسل لك الرمز الجديد على واتساب.','The manager has been notified. He will send you the new PIN on WhatsApp.');}
+  catch(e){m.textContent=e.message==='Failed to fetch'?T('لا يوجد اتصال','No connection'):e.message;b.disabled=false;}}
 async function doLogin(){$('#err').textContent='';$('#go').disabled=true;try{const res=await fetch(SRV+'/staff/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:$('#uid').value,pin:$('#pin').value})});const r=await res.json().catch(()=>({}));
     if(!r.ok)throw new Error(res.status===401?T('الرمز غير صحيح','Wrong PIN'):res.status===429?T('محاولات كثيرة، انتظر ساعة','Too many attempts. Wait one hour.'):T('تعذّر الدخول، جرّب مرة ثانية','Could not sign in. Try again.'));
     TOK=r.token;ME=r.user;try{localStorage.setItem('dal-staff-tok',TOK);localStorage.setItem('dal-staff-me',JSON.stringify(ME));}catch(e){}pickLang();render();load();}catch(e){$('#err').textContent=e.message==='Failed to fetch'?T('لا يوجد اتصال','No connection'):e.message;$('#go').disabled=false;}}
@@ -197,6 +204,7 @@ function render(){header();applyDir();if(!ME||!TOK){$('#nav').style.display='non
   $('#m').innerHTML=(tab===(pages[0]||[])[0]?alertCard():'')+(tab==='invoices'?invView():tab==='stock'?stockView():tab==='customers'?custView():tab==='roast'?(window.DALR?DALR.view(can):modWait('roast')):tab==='count'?(window.DALC?DALC.view():modWait('count')):tab==='move'?(window.DALM?DALM.view():modWait('move')):`<p class="note">${T('لا صفحات مصرّح بها لك بعد. راجع المالك.','No pages are enabled for you yet. Ask the owner.')}</p>`);}
 document.addEventListener('click',async e=>{const lg=e.target.closest('[data-lang]');if(lg){setLang(lg.getAttribute('data-lang'));return;}
   if(e.target.closest('#go')){doLogin();return;}
+  if(e.target.closest('#forgot')){doForgot();return;}
   const t=e.target.closest('[data-tab]');if(t){tab=t.getAttribute('data-tab');render();window.scrollTo(0,0);return;}
   const ff=e.target.closest('[data-f]');if(ff){flt=ff.getAttribute('data-f');render();return;}
   const tt=e.target.closest('[data-t]');if(tt){selT=tt.getAttribute('data-t');render();return;}
