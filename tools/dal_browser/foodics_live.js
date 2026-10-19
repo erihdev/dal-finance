@@ -3,7 +3,7 @@
    قراءة فقط: طلبات GET داخل الصفحة، لا ضغط ولا حفظ ولا إرسال أي نموذج. */
 'use strict';
 module.exports = function foodicsLive(d) {
-  const { E, gas, getCtx } = d;
+  const { E, gas, getCtx } = d; const viewing = d.viewing || (() => false);
   const EVERY = Math.max(30, +E.FX_SEC || 30) * 1000, ACC_EVERY = 10 * 60e3, BEAT = 10 * 60e3;
   const S = { at: null, wrote: null, accAt: 0, err: null, accErr: null, n: 0, busy: false, needLogin: false, last: null };
   const r2 = v => v == null || !isFinite(+v) ? null : Math.round(+v * 100) / 100;
@@ -62,7 +62,8 @@ module.exports = function foodicsLive(d) {
   }
 
   async function run(force) {
-    if (S.busy) return; const ctx = getCtx(); if (!ctx || !gas) return; S.busy = true; let p = null;
+    if (S.busy) return; if (viewing()) { S.paused = new Date().toISOString(); return; }   // لا نفتح تبويبات وأنت تستخدم شاشة المتصفح
+    const ctx = getCtx(); if (!ctx || !gas) return; S.busy = true; let p = null;
     try {
       p = await ctx.newPage(); const con = await pullConsole(p);
       const cur = S.last || await gas({ op: 'get', paths: ['live/foodics'] }).then(r => { const x = r.docs && r.docs['live/foodics']; return x && x.data || null; }).catch(() => null);
@@ -89,6 +90,6 @@ module.exports = function foodicsLive(d) {
     start() { setTimeout(() => run(true), 90e3); setInterval(() => run(false), EVERY); },
     kick() { clearTimeout(tm); tm = setTimeout(() => run(false), 5e3); },   // ويب هوك تغيّر المنيو (حين يُربط تطبيق فودكس)
     run, diff,
-    status() { return { at: S.at, wrote: S.wrote, n: S.n, err: S.err, accErr: S.accErr, needLogin: S.needLogin, every: EVERY / 1000 }; },
+    status() { return { paused: S.paused || null, at: S.at, wrote: S.wrote, n: S.n, err: S.err, accErr: S.accErr, needLogin: S.needLogin, every: EVERY / 1000 }; },
   };
 };
