@@ -11,7 +11,7 @@ const E = process.env; const fs = require('fs');
 const USER = E.VIEW_USER || 'dal', PASS = E.VIEW_PASSWORD || '';
 const GAS = E.GAS_URL, KEY = E.DAL_KEY, POLL = (+E.POLL_MIN || 5) * 60e3;
 const WMDIR = '/data/wamedia';   // مرفقات واتساب الخاصة (تُحذف بعد 45 يومًا)
-const FAST = Math.max(30, +E.FAST_SEC || 60) * 1000, FAST_K = ['foodics', 'retm'];   // أرقام المبيعات كل دقيقة
+const FAST = Math.max(30, +E.FAST_SEC || 30) * 1000, FAST_K = ['foodics', 'retm'];   // أرقام المبيعات كل 30 ثانية
 const SITES = [
   { k: 'foodics', name: 'فودكس', url: 'https://console.foodics.com/', login: /login|auth|signin/i },
   { k: 'retm', name: 'رتم', url: 'https://retm.sa/dashboard?period=1', login: /login|signin/i },
