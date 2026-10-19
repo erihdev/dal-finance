@@ -3,7 +3,7 @@
    قراءة فقط: طلبات GET داخل الصفحة، لا ضغط ولا حفظ ولا إرسال أي نموذج. */
 'use strict';
 module.exports = function foodicsLive(d) {
-  const { E, gas, getCtx } = d; const viewing = d.viewing || (() => false);
+  const { E, gas, getCtx } = d; const KEEP = d.keep; const viewing = d.viewing || (() => false);
   const EVERY = Math.max(30, +E.FX_SEC || 30) * 1000, ACC_EVERY = 10 * 60e3, BEAT = 10 * 60e3;
   const S = { at: null, wrote: null, accAt: 0, err: null, accErr: null, n: 0, busy: false, needLogin: false, last: null };
   const r2 = v => v == null || !isFinite(+v) ? null : Math.round(+v * 100) / 100;
@@ -12,8 +12,7 @@ module.exports = function foodicsLive(d) {
   const live = a => (a || []).filter(x => !x.deleted_at);
 
   async function pullConsole(p) {
-    await p.goto('https://console.foodics.com/inventory/Items', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await p.waitForTimeout(1500);
+    if (!/^https:\/\/console\.foodics\.com\//.test(p.url())) { await p.goto('https://console.foodics.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }); await p.waitForTimeout(1500); }   // التبويب الدائم؛ لا تنقّل إن كان على الكونسول
     if (/login|auth|signin/i.test(p.url())) { S.needLogin = true; throw new Error('needLogin'); }
     S.needLogin = false;
     const D = await p.evaluate(async () => {
@@ -62,14 +61,13 @@ module.exports = function foodicsLive(d) {
   }
 
   async function run(force) {
-    if (S.busy) return; if (viewing()) { S.paused = new Date().toISOString(); return; }   // لا نفتح تبويبات وأنت تستخدم شاشة المتصفح
-    const ctx = getCtx(); if (!ctx || !gas) return; S.busy = true; let p = null;
+    if (S.busy) return; const ctx = getCtx(); if (!ctx || !gas || !KEEP) return; S.busy = true;
     try {
-      p = await ctx.newPage(); const con = await pullConsole(p);
+      const con = await KEEP.withPage('console', p => pullConsole(p));   // من تبويب الكونسول الدائم، بلا تبويبات طارئة
       const cur = S.last || await gas({ op: 'get', paths: ['live/foodics'] }).then(r => { const x = r.docs && r.docs['live/foodics']; return x && x.data || null; }).catch(() => null);
       const old = cur && cur.con || null;
       let acc = cur && cur.acc || null;
-      if (force || Date.now() - S.accAt > ACC_EVERY) { S.accAt = Date.now(); try { acc = await pullAcc(p); S.accErr = null; } catch (e) { S.accErr = String(e.message || e).slice(0, 80); } }
+      if ((force || Date.now() - S.accAt > ACC_EVERY) && !viewing()) { S.accAt = Date.now(); try { acc = await KEEP.withPage('accounting', async p => { try { return await pullAcc(p); } finally { await p.goto('https://accounting.foodics.com/dashboard', { waitUntil: 'commit', timeout: 60000 }).catch(() => {}); } }); S.accErr = null; } catch (e) { S.accErr = String(e.message || e).slice(0, 80); } }
       const keep = old ? { ask: old.ask, set: old.set, sales: old.sales } : {};
       const counts = Object.assign({}, old && old.counts || {}, con.counts);
       const next = Object.assign({}, keep, con, { counts });
@@ -83,11 +81,11 @@ module.exports = function foodicsLive(d) {
         await gas({ op: 'set', path: 'live/foodics', data: doc }); S.wrote = now; S.last = doc;
       }
     } catch (e) { S.err = String(e.message || e).slice(0, 120); }
-    finally { if (p) await p.close().catch(() => {}); S.busy = false; }
+    finally { S.busy = false; }
   }
   let tm = null;
   return {
-    start() { setTimeout(() => run(true), 90e3); setInterval(() => run(false), EVERY); },
+    start() { setTimeout(() => run(true), 20e3); setInterval(() => run(false), EVERY); },
     kick() { clearTimeout(tm); tm = setTimeout(() => run(false), 5e3); },   // ويب هوك تغيّر المنيو (حين يُربط تطبيق فودكس)
     run, diff,
     status() { return { paused: S.paused || null, at: S.at, wrote: S.wrote, n: S.n, err: S.err, accErr: S.accErr, needLogin: S.needLogin, every: EVERY / 1000 }; },

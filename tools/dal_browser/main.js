@@ -117,8 +117,13 @@ async function readSalla(from, to) {   // ملخص طلبات سلة بين تا
     return { ok: true, stats: agg };
   } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 120) }; }
 }
-async function readSite(s) {
+async function readSite(s) {   // فودكس وبونات من تبويبيهما الدائمين (بلا فتح/إغلاق)؛ غيرهما في تبويب مؤقت
+  const kk = { foodics: 'console', bonat: 'bonat' }[s.k];
+  if (kk && typeof KEEP !== 'undefined') return KEEP.withPage(kk, p => readOn(s, p)).catch(e => ({ at: new Date().toISOString(), ok: false, err: String(e.message || e).slice(0, 200) }));
   const p = await ctx.newPage();
+  try { return await readOn(s, p); } finally { await p.close().catch(() => {}); }
+}
+async function readOn(s, p) {
   try {
     await p.goto(s.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await p.waitForTimeout(6000);
@@ -134,7 +139,6 @@ async function readSite(s) {
     const needLogin = s.login.test(url) || /تسجيل الدخول|Sign in|Log in|كلمة المرور|Password/i.test(text.slice(0, 600));
     return { at: new Date().toISOString(), ok: !needLogin, needLogin, url, text };
   } catch (e) { return { at: new Date().toISOString(), ok: false, err: String(e.message || e).slice(0, 200) }; }
-  finally { await p.close().catch(() => {}); }
 }
 async function poll(force) {
   if (busy || !ctx) return;
@@ -193,7 +197,7 @@ async function retmRefresh(why) {
 async function retmLive() {
   if (!ctx || RL.page) return;
   try {
-    const p = await ctx.newPage(); RL.page = p; p.on('close', () => { RL.page = null; setTimeout(retmLive, 60e3); });
+    const p = await ctx.newPage(); RL.page = p; p.on('close', () => { RL.page = null; setTimeout(retmLive, 5e3); });
     await p.exposeFunction('__dalRetmEv', ev => { RL.evAt = new Date().toISOString(); RL.evs = RL.evs.concat([String(ev).slice(0, 60)]).slice(-10); clearTimeout(rlTimer); rlTimer = setTimeout(() => retmRefresh('event'), 800); });
     // بعد كل تحميل للصفحة: ننتظر اتصال اللوحة بقناتها الحية ثم نستمع لأحداثها (أسماء الأحداث فقط تُسجّل، بلا بيانات)
     await p.addInitScript(() => { const tick = () => { const P = window.Pusher, i = P && P.instances && P.instances[0]; if (!i) return setTimeout(tick, 1000); if (i.__dal) return; i.__dal = 1; i.bind_global(ev => { if (!/^pusher[:_]/.test(ev)) window.__dalRetmEv(ev); }); }; tick(); });
@@ -685,9 +689,9 @@ async function vncCheck() {
 setTimeout(vncCheck, 20e3); setInterval(vncCheck, 60e3);
 const SWH = { n: 0, at: null, evs: [], bad: 0 };   // ويب هوك سلة
 const KEEP = require('./keepalive')({ E, getCtx: () => ctx, notify: notifyOwner, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // تبويب ثابت لكل منصة يُحدَّث كل 30 ثانية
-const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, getCtx: () => ctx, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // أرقام فودكس لحظية (الكونسول كل 30 ثانية، المحاسبي كل 10 دقائق)   // جسر سلة → فودكس
+const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, getCtx: () => ctx, keep: KEEP, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // أرقام فودكس لحظية (الكونسول كل 30 ثانية، المحاسبي كل 10 دقائق)   // جسر سلة → فودكس
 
 if (require.main !== module) { module.exports = { STAFF_PAGES, DOCS, XR, docPdf, docSign, docsRead, srv, SF }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { SF.start(); FX.start(); KEEP.start(); setTimeout(retmLive, 45e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { SF.start(); FX.start(); KEEP.start(); setTimeout(retmLive, 3e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }
