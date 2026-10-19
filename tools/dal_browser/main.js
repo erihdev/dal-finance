@@ -587,7 +587,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -665,6 +665,15 @@ const srv = http.createServer((req, res) => {
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 // ===== جرد فودكس: يقرأ آخر عمليات الجرد من كونسول فودكس (جلسة المتصفح، قراءة فقط) → live/foodics_counts للمالك، وإشعار عند جرد جديد =====
 const SF = require('./salla_foodics')({ E, fs, gas: (GAS && KEY) ? gas : null, notifyOwner, sallaApi, readBody });
+// شاشة المتصفح (noVNC): فحص المنافذ كل دقيقة وإعادة تشغيل x11vnc/websockify إن سقطا
+const VNC = { vnc: null, ws: null, at: null, fixed: 0 };
+function portUp(port) { return new Promise(ok => { const c = require('net').connect(port, '127.0.0.1'); const t = setTimeout(() => { c.destroy(); ok(false); }, 2000); c.on('connect', () => { clearTimeout(t); c.end(); ok(true); }); c.on('error', () => { clearTimeout(t); ok(false); }); }); }
+async function vncCheck() {
+  const { spawn } = require('child_process'); VNC.vnc = await portUp(5900); VNC.ws = await portUp(6080); VNC.at = new Date().toISOString();
+  if (!VNC.vnc) { VNC.fixed++; spawn('x11vnc', ['-display', ':99', '-localhost', '-forever', '-shared', '-nopw', '-quiet', '-rfbport', '5900', '-noxdamage', '-wait', '20', '-defer', '20'], { detached: true, stdio: 'ignore', env: Object.assign({}, process.env, { DISPLAY: ':99' }) }).unref(); }
+  if (!VNC.ws) { VNC.fixed++; spawn('websockify', ['--web', '/usr/share/novnc', '127.0.0.1:6080', '127.0.0.1:5900'], { detached: true, stdio: 'ignore' }).unref(); }
+}
+setTimeout(vncCheck, 20e3); setInterval(vncCheck, 60e3);
 const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, getCtx: () => ctx, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // أرقام فودكس لحظية (الكونسول كل 30 ثانية، المحاسبي كل 10 دقائق)   // جسر سلة → فودكس
 
 if (require.main !== module) { module.exports = { STAFF_PAGES, DOCS, XR, docPdf, docSign, docsRead, srv, SF }; } else {
