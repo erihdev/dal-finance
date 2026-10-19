@@ -38,7 +38,7 @@ module.exports = function foodicsLive(d) {
   }
 
   async function pullAcc(p) {   // العدّادات من نص الصفحات (عربي أو إنجليزي)؛ أي فشل يُبقي القراءة السابقة
-    const txt = async u => { try { await p.goto(u, { waitUntil: 'domcontentloaded', timeout: 45000 }); } catch (e) { if (!/interrupted|ERR_ABORTED/i.test(String(e.message))) throw e; } await p.waitForTimeout(5000); if (/login|auth|signin/i.test(p.url())) throw new Error('acc-login ' + p.url().replace(/\?.*/, '').slice(0, 60)); return p.evaluate(() => document.body.innerText); };
+    const txt = async u => { try { await p.goto(u, { waitUntil: 'commit', timeout: 60000 }); } catch (e) { if (!/interrupted|ERR_ABORTED|Timeout/i.test(String(e.message))) throw e; } for (let i = 0; i < 12; i++) { await p.waitForTimeout(2500); const t = await p.evaluate(() => document.body ? document.body.innerText : '').catch(() => ''); if (/\(\d+\)|\d{2,}|login|تسجيل الدخول/i.test(t) && t.length > 200) break; } if (/login|auth|signin/i.test(p.url())) throw new Error('acc-login ' + p.url().replace(/\?.*/, '').slice(0, 60)); return p.evaluate(() => document.body.innerText); };
     const n = (t, re) => { const m = t.match(re); return m ? +m[1] : null; };
     const a = {};
     a.posInv = n(await txt('https://accounting.foodics.com/pos_transactions/invoices/all'), /(?:الكل|All)\s*\((\d+)\)/);
