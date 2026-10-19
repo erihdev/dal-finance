@@ -772,7 +772,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], fcounts: { at: FC.at, err: FC.err, probe: FC.probe } })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: state.needLogin || [], fcounts: { at: FC.at, err: FC.err, probe: FC.probe }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -782,9 +782,10 @@ const srv = http.createServer((req, res) => {
       } catch (e) { res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<meta charset=utf-8><body style="font-family:sans-serif;direction:rtl;text-align:center;padding:40px"><h2>تعذّر الربط</h2><p>' + String(e.message || e) + '</p></body>'); }
     })();
   }
+  if (req.url.startsWith('/foodics/callback')) { SF.route(req, res, false).catch(() => { try { res.writeHead(500); res.end(); } catch (e) {} }); return; }   // عودة تفويض فودكس (عامة)
   if (req.url.startsWith('/salla/webhook')) {   // مستقبِل أحداث سلة (عام): نقبل ونخزّن آخر حدث
     let b = ''; req.on('data', c => { b += c; if (b.length > 2e6) req.destroy(); });
-    req.on('end', () => { try { const j = JSON.parse(b || '{}'); const dt = j && j.data; if (j && /authorize/i.test(j.event || '') && dt && dt.access_token && dt.refresh_token) { const exp = dt.expires && +dt.expires > 1e11 ? +dt.expires : Date.now() + (+dt.expires || 1209600) * 1000; SOAUTH = { access: dt.access_token, refresh: dt.refresh_token, exp, at: Date.now() }; try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); console.log('salla token via webhook, refresh ok'); } catch (e) {} } } catch (e) {} res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); });
+    req.on('end', () => { try { const j = JSON.parse(b || '{}'); const dt = j && j.data; if (j && /order/i.test(j.event || '')) SF.schedule(20e3); if (j && /authorize/i.test(j.event || '') && dt && dt.access_token && dt.refresh_token) { const exp = dt.expires && +dt.expires > 1e11 ? +dt.expires : Date.now() + (+dt.expires || 1209600) * 1000; SOAUTH = { access: dt.access_token, refresh: dt.refresh_token, exp, at: Date.now() }; try { fs.writeFileSync(SOFILE, JSON.stringify(SOAUTH)); console.log('salla token via webhook, refresh ok'); } catch (e) {} } } catch (e) {} res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); });
     return;
   }
   if (req.method === 'POST' && req.url === '/invoice/ingest') {   // من الناقل: ملف + سجل مفحوص (محمي بمفتاح)
@@ -841,6 +842,7 @@ const srv = http.createServer((req, res) => {
     })();
   }
   cors(req, res);
+  if (req.url.startsWith('/foodics/')) { SF.route(req, res, true).catch(e => { try { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } catch (x) {} }); return; }   // جسر سلة → فودكس (المالك)
   if (req.method === 'POST' && req.url === '/sign') {   // المالك: توقيع «اعتماد» على مستند {no, role:'appr', name, png} أو على فرق جرد {kind:'mov', params:{from,to,item}, adj, role:'appr', name, png}
     return (async () => { try { const j = JSON.parse(await readBody(req, 2e5) || '{}'); if (j.role !== 'appr') throw new Error('role'); const o = await docSign(j, String(j.name || 'المالك').slice(0, 80), 'owner', req.headers['user-agent'], true); res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: true, doc: o.item, sig: o.sig })); }
       catch (e) { res.writeHead(e.message === 'too-big' ? 413 : SIGN_CODE[e.message] || 500, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, err: String(e.message || e) })); } })();
@@ -881,6 +883,7 @@ const srv = http.createServer((req, res) => {
 });
 srv.on('upgrade', (req, sock, head) => { if (!authed(req)) return sock.destroy(); viewers++; lastView = Date.now(); sock.on('close', () => { viewers = Math.max(0, viewers - 1); lastView = Date.now(); }); proxy.ws(req, sock, head); });
 // ===== جرد فودكس: يقرأ آخر عمليات الجرد من كونسول فودكس (جلسة المتصفح، قراءة فقط) → live/foodics_counts للمالك، وإشعار عند جرد جديد =====
+const SF = require('./salla_foodics')({ E, fs, gas: (GAS && KEY) ? gas : null, notifyOwner, sallaApi, readBody });   // جسر سلة → فودكس
 const FCF = '/data/foodics_counts.json'; let FC = { notified: [], probe: null, at: null, err: null }; try { FC = Object.assign(FC, JSON.parse(fs.readFileSync(FCF, 'utf8'))); } catch (e) {}
 const fcSave = () => { try { fs.writeFileSync(FCF, JSON.stringify({ notified: FC.notified.slice(-50) })); } catch (e) {} };
 function fcNum(v) { const n = typeof v === 'string' ? parseFloat(v) : v; return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : null; }
@@ -924,5 +927,5 @@ async function readFoodicsCounts() {
 }
 if (require.main !== module) { module.exports = { unitsApply, moveApply, countAdjust, pendingApply, roastMoves, roastUndo, alertsCompute, STAFF_PAGES, DALU, CITEMS, DOCS, docPdf, docSign, docsRead, srv, fcItems }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(readFoodicsCounts, 90e3); setInterval(readFoodicsCounts, 10 * 60e3); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { SF.start(); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(readFoodicsCounts, 90e3); setInterval(readFoodicsCounts, 10 * 60e3); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }
