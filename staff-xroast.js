@@ -15,11 +15,7 @@
   const custs = () => (doc().custs || []);
   const list = () => (doc().list || []);
   const docs = () => ((window.DALD().docs_out || {}).items || []).filter(d => d.kind === 'xrc' || d.kind === 'xdl');
-  // طلبات واتساب (Roasting Tracking) وخيش سلو (DAL & SLOW) كما يرسلها الخادم للفريق: اسم ومحصول ووزن وحالة فقط. «بانتظار» = لم يُسجَّل له استلام في التطبيق بعد
-  const waiting = () => { const L = list(); const got = (name, d, coffee) => L.some(x => x.t === 'in' && x.cust && norm(x.cust.name) === norm(name) && (!coffee || !x.coffee || norm(x.coffee) === norm(coffee)) && Math.abs(Date.parse(day(x.at)) - Date.parse(d || day(x.at))) < 7 * 864e5);
-    const rt = ((window.DALD().rt || {}).orders || []).filter(o => o.st !== 'out' && !got(o.name, o.d, o.bean)).map(o => ({ id: o.id, d: o.d, name: o.name, coffee: o.bean, kg: o.kg, st: o.st, note: o.note, src: 'rt' }));
-    const sl = ((window.DALD().slow || {}).cards || []).filter(c => c.st !== 'out' && !got('سلو', c.d, c.o)).map(c => ({ id: c.id, d: c.d, name: 'سلو', coffee: c.o, kg: c.g, st: c.st, note: c.note, src: 'slow' }));
-    return sl.concat(rt).sort((a, b) => String(b.d).localeCompare(String(a.d))); };
+  const waiting = () => [];   // أُوقفت قراءة قروبي واتساب: المصدر الوحيد ما يسجّله الموظف
   const norm = s => String(s || '').replace(/\s+/g, ' ').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').trim().toLowerCase();
   const rr = () => window.DALRENDER();
   const TT = { in: ['استلام أخضر', 'Green received'], roast: ['دفعة تحميص', 'Roast batch'], out: ['تسليم محمّص', 'Roasted delivered'] };
