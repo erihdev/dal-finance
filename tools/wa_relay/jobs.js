@@ -288,8 +288,7 @@ customer=true فقط إذا كان يشتري أو يسأل عن بن/منتج/�
   setTimeout(() => runReminders().catch(e => { lastErr = 'remind ' + e.message; }), 90e3);
 
   function onMessage(m) {
-    if (m.g && m.chat === SLOW_GROUP) debounce('slow', runSlow);
-    else if (m.g && m.chat === RT_GROUP) debounce('rt', runRt);
+    if (m.g && (m.chat === SLOW_GROUP || m.chat === RT_GROUP)) return;   // أُوقفت بطلب المالك: الاستلام والتسليم من تطبيق الفريق، وتحميص المحمصة من فودكس (هريرا)
     else if (m.g) { if (!m.me && isDal(m.chat)) debounce('g:' + m.chat, () => runGroup(m.chat)); }
     else { onPrivate(m); if (m.ph && !STAFF[m.ph]) { if (m.me) markCustomerReplied(m.ph, m.t); else debounce('cu:' + m.ph, () => runCustomer(m.ph)); } }
   }
