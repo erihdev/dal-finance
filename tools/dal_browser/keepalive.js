@@ -1,4 +1,4 @@
-/* تبويبات دائمة في المتصفح السحابي: فودكس الكونسول، فودكس المحاسبي، تمارا، بونات، سلة، علو (+ رتم في تبويبه اللحظي في main.js).
+/* تبويبات دائمة في المتصفح السحابي: فودكس الكونسول، فودكس المحاسبي، تمارا، بونات، سلة، علو، بول أب (+ رتم في تبويبه اللحظي في main.js).
    تُفتح فور تشغيل الخادم، وتُحدَّث كل 30 ثانية (قراءة فقط، بلا ضغط ولا إرسال)، ولا تُغلق أبداً: عند أي خطأ يُعاد تحميل التبويب نفسه.
    القرّاء الآخرون (أرقام فودكس، القارئ العام) يقرؤون من هذه التبويبات نفسها عبر withPage بقفل لكل تبويب، فلا تُفتح تبويبات طارئة.
    إن ظهرت صفحة تسجيل الدخول: إشعار للمالك مرة واحدة لكل انقطاع. */
@@ -12,6 +12,7 @@ module.exports = function keepAlive(d) {
     { k: 'tamara', name: 'تمارا', url: 'https://partners.tamara.co/#/transaction/list', login: /login|signin|auth\b/i },
     { k: 'bonat', name: 'بونات', url: 'https://store.bonat.io/', login: /\/login|signin/i },
     { k: 'salla', name: 'سلة', url: 'https://s.salla.sa/', login: /accounts\.salla|\/login|signin/i },
+    { k: 'pullup', name: 'بول أب', url: 'https://pullupme.io/dashboard', login: /\/login|signin|auth\b/i },
     { k: 'olu', name: 'علو', url: 'https://hr.olu.sa/', login: /\/login|signin|auth\b/i },
   ];
   const BY = Object.fromEntries(SITES.map(s => [s.k, s]));

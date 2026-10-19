@@ -5,6 +5,7 @@ const SITES = [
   { k: 'bonat', name: 'بونات', domains: ['bonat.io'], origins: ['https://store.bonat.io', 'https://dashboard-api.bonat.io'], hdrHosts: ['dashboard-api.bonat.io', 'store.bonat.io'], topSite: 'https://bonat.io' },
   { k: 'olu', name: 'علو', domains: ['olu.sa'], origins: ['https://hr.olu.sa'] },
   { k: 'tamara', name: 'تمارا', domains: ['tamara.co'], origins: ['https://partners.tamara.co'], apiHost: 'partner-api.tamara.co', hdrHosts: ['partner-api.tamara.co', 'partners.tamara.co'], topSite: 'https://tamara.co' },
+  { k: 'pullup', name: 'بول أب', domains: ['pullupme.io'], origins: ['https://pullupme.io'] },
   { k: 'salla', name: 'سلة', domains: ['salla.sa'], origins: ['https://s.salla.sa'], apiHost: 'api.salla.dev', hdrHosts: ['s.salla.sa'], topSite: 'https://salla.sa' },
 ];
 

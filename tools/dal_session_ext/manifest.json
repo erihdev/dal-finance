@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "دال — نقل الجلسات للمتصفح السحابي",
-  "version": "2.0",
+  "version": "2.1",
   "description": "ينقل جلسات الدخول (بدون كلمات مرور) إلى متصفح دال السحابي: يدوياً بضغطة، وتلقائياً كل 30 دقيقة.",
   "permissions": [
     "alarms",
@@ -21,7 +21,9 @@
     "https://*.salla.sa/*",
     "https://s.salla.sa/*",
     "https://*.tamara.co/*",
-    "https://api.salla.dev/*"
+    "https://api.salla.dev/*",
+    "https://pullupme.io/*",
+    "https://*.pullupme.io/*"
   ],
   "action": {
     "default_popup": "popup.html",
