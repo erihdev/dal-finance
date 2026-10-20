@@ -601,6 +601,11 @@ const srv = http.createServer((req, res) => {
       } catch (e) { res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }); res.end('<meta charset=utf-8><body style="font-family:sans-serif;direction:rtl;text-align:center;padding:40px"><h2>تعذّر الربط</h2><p>' + String(e.message || e) + '</p></body>'); }
     })();
   }
+  if (req.method === 'GET' && req.url.startsWith('/mk/img?')) {   // صورة منتج من بول أب لتصميم الحملة (CORS للتحميل) — مضيف واحد مسموح فقط
+    const u = new URL(req.url, 'http://x').searchParams.get('u') || '';
+    if (!/^https:\/\/pullupme\.io\/uploads\/[a-f0-9]+\.(?:jpe?g|png|webp)$/i.test(u)) { res.writeHead(400); return res.end(); }
+    fetch(u).then(async r => { if (!r.ok) throw new Error(r.status); const b = Buffer.from(await r.arrayBuffer()); res.writeHead(200, { 'Content-Type': r.headers.get('content-type') || 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=86400' }); res.end(b); }).catch(() => { res.writeHead(502); res.end(); });
+    return; }
   if (req.method === 'POST' && req.url.startsWith('/salla/webhook')) {   // ويب هوك سلة الرسمي (تطبيق شركاء سلة): طلب جديد/محدَّث → جسر فودكس فوراً
     let b = ''; req.on('data', c => { b += c; if (b.length > 1e6) req.destroy(); });
     req.on('end', () => { try {

@@ -24,6 +24,8 @@ module.exports = function mkExec(d) {
     out.top = rows;
     const mt = await txt('https://pullupme.io/dashboard/marketing');
     out.reach = { total: num((mt.match(/(\d+)\s*\n\s*الوصول المتوقع/) || [])[1]), lock: num((mt.match(/(\d+)\s*\n\s*على شاشة القفل/) || [])[1]), inApp: num((mt.match(/(\d+)\s*\n\s*داخل التطبيق فقط/) || [])[1]) };
+    await txt('https://pullupme.io/dashboard/menu');   // صور المنتجات: من منيو بول أب فقط (بقرار المالك)
+    out.images = await p.evaluate(() => [...document.querySelectorAll('main img')].map(i => { const card = i.closest('div,li,article'); const ar = ((card && card.parentElement ? card.parentElement.innerText : '').split('\n').map(x => x.trim()).filter(Boolean)[0]) || ''; const u = String(i.currentSrc || i.src || ''); return /pullupme\.io\/uploads\//.test(u) ? { en: (i.alt || '').trim(), ar, url: u.split('?')[0] } : null; }).filter(Boolean)).catch(() => []);
     await p.goto('https://pullupme.io/dashboard', { waitUntil: 'commit', timeout: 45000 }).catch(() => {});
     return out;
   }

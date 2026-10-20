@@ -69,7 +69,8 @@ function setup({ gas }) {
       const user = `اليوم ${t}.
 المناسبات خلال 45 يوماً: ${soon.join('، ') || 'لا يوجد'}.
 معرفة المنصات: ${JSON.stringify(KNOW)}
-ذكاء المنصات (مجمّع، قُرئ ${intel && intel.at || '—'}): ${JSON.stringify({ pullup: intel && intel.pullup, bonat: intel && intel.bonat })}
+ذكاء المنصات (مجمّع، قُرئ ${intel && intel.at || '—'}): ${JSON.stringify({ pullup: intel && intel.pullup && Object.assign({}, intel.pullup, { images: undefined }), bonat: intel && intel.bonat })}
+منتجات لها صورة في منيو بول أب (اختر creative.product منها حرفياً بالاسم العربي ليظهر المنتج في التصميم): ${JSON.stringify(((intel && intel.pullup && intel.pullup.images) || []).map(x => x.ar).filter(Boolean))}
 منتجات فودكس (الاسم، التصنيف، السعر شامل الضريبة، التكلفة، الهامش%): ${JSON.stringify(P.slice(0, 120))}
 المقترحات الحالية بانتظار الاعتماد: ${JSON.stringify(pending.map(p => p.title))}
 المرفوضة مؤخراً: ${JSON.stringify(rejected)}`;
