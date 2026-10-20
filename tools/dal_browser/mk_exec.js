@@ -56,7 +56,7 @@ module.exports = function mkExec(d) {
        الجنس، العمر، المدن، الفروع، آخر زيارة، عملاء التطبيق، وقائمة مخصصة (بحث باسم/جوال + «إضافة أرقام»)، ثم «حفظ الاختيار».
      - إنشاء القالب (نسبة مئوية): عنوان القالب، قيمة الخصم %، الحد الأعلى، عنوان إنجليزي/عربي (70 حرفاً)، ينطبق على، الصلاحية، تعطيل إعادة الإهداء.
      الجدولة (20 أكتوبر، قراءة فقط): خيار «جدولة الإرسال» يُظهر حقل «اختر التاريخ» ← تقويم + قائمة أوقات كل 30 دقيقة («6:30 ص»)، والأيام الماضية معطّلة، وزر الإرسال معطّل حتى يكتمل.
-     لم يُتحقق منه بعد (لذلك يُرفض عمداً): حقول إنشاء قالب «كوب قهوة/مبلغ ثابت»، وظيفة زر «إرسال الآن» داخل شاشة اختيار العملاء. أصناف الـ DOM لمُنتقي الجدولة (flatpickr) مستنتجة من الشكل ولم تُجرَّب. */
+     لم يُتحقق منه بعد (لذلك يُرفض عمداً): حقول إنشاء قالب «كوب قهوة/مبلغ ثابت»، وظيفة زر «إرسال الآن» داخل شاشة اختيار العملاء. مُنتقي الجدولة react-datepicker: الأصناف مؤكدة من DOM بونات، لكن تسلسل النقرات لم يُجرَّب حياً. */
   const BONAT_SEG = { new: 'عميل جديد', lost: 'عميل مفقود', potential: 'عميل محتمل', vip: 'عميل مميز', loyal: 'عميل وفي', regular: 'عميل دائم' };
   const BONAT_SEG_AR = { 'العملاء الجدد': 'new', 'الجدد': 'new', 'المفقودون': 'lost', 'العملاء المفقودين': 'lost', 'المحتملون': 'potential', 'العملاء المحتملين': 'potential', 'المميزون': 'vip', 'العملاء المميزون': 'vip', 'الأوفياء': 'loyal', 'العملاء الأوفياء': 'loyal', 'الدائمون': 'regular', 'العملاء الدائمين': 'regular' };
   const normPhone = s => { const d = String(s || '').replace(/\D/g, ''); return d.startsWith('966') ? '+' + d : d.startsWith('05') ? '+966' + d.slice(1) : d.startsWith('5') ? '+966' + d : d; };
@@ -96,19 +96,21 @@ module.exports = function mkExec(d) {
         }
         await pick.getByRole('button', { name: 'حفظ الاختيار' }).click();
       } else await drawer.getByText('جميع العملاء').click();
-      if (sm) {   // جدولة: خيار «جدولة الإرسال» ← حقل «اختر التاريخ» (تقويم Flatpickr + قائمة أوقات 30 دقيقة بصيغة «6:30 ص»؛ الأيام الماضية معطّلة)
+      if (sm) {   // جدولة: «جدولة الإرسال» ← حقل «اختر التاريخ» (react-datepicker — أصنافه مؤكدة من DOM بونات 20 أكتوبر؛ أوقات كل 30 دقيقة «6:30 ص»؛ الماضي معطّل)
         await drawer.getByText('جدولة الإرسال').click();
         await drawer.getByPlaceholder('اختر التاريخ').click();
-        const cal = p.locator('.flatpickr-calendar.open').last();
-        const mi = +sm[2] - 1, yi = +sm[1], dy = +sm[3];
-        for (let i = 0; i < 12; i++) {   // التنقل للشهر المطلوب (لا يدعم الرجوع للماضي)
-          const cur = await cal.evaluate(el => { const m = el.querySelector('.cur-month,.flatpickr-monthDropdown-months'), y = el.querySelector('.cur-year'); return [m && (m.value !== undefined && m.tagName === 'SELECT' ? +m.value : m.textContent), y && +y.value]; }).catch(() => null);
-          if (cur && cur[1] === yi && +cur[0] === mi) break;
-          await cal.locator('.flatpickr-next-month').click();
-        }
-        await cal.locator('.flatpickr-day:not(.prevMonthDay):not(.nextMonthDay):not(.flatpickr-disabled)').filter({ hasText: new RegExp('^\\s*' + dy + '\\s*$') }).first().click();
-        const h = +sm[4], mm = sm[5], lab = ((h % 12) || 12) + ':' + mm + ' ' + (h < 12 ? 'ص' : 'م');
-        await p.getByText(lab, { exact: true }).first().click();
+        const cal = p.locator('.react-datepicker').last(); await cal.waitFor({ timeout: 10000 });
+        const yi = +sm[1], mi = +sm[2] - 1, dy = +sm[3];
+        const nw = new Date(Date.now() + 3 * 3600e3), steps = (yi - nw.getUTCFullYear()) * 12 + (mi - nw.getUTCMonth());   // يفتح المُنتقي على شهر اليوم (توقيت الرياض)
+        if (steps < 0 || steps > 11) return { status: 'unsupported', msg: 'تاريخ الجدولة يجب أن يكون خلال 12 شهراً قادمة.' };
+        for (let i = 0; i < steps; i++) await cal.locator('.react-datepicker__navigation--next').click();
+        const day = cal.locator('.react-datepicker__day--' + String(dy).padStart(3, '0') + ':not(.react-datepicker__day--outside-month):not(.react-datepicker__day--disabled)');
+        if (!(await day.count())) return { status: 'failed', msg: 'اليوم المطلوب غير متاح في مُنتقي بونات (ماضٍ أو معطّل).' };
+        await day.first().click();
+        const h = +sm[4], lab = ((h % 12) || 12) + ':' + sm[5] + ' ' + (h < 12 ? 'ص' : 'م');
+        const tm = p.locator('.react-datepicker__time-list-item:not(.react-datepicker__time-list-item--disabled)').filter({ hasText: new RegExp('^\\s*' + lab + '\\s*$') });
+        if (!(await tm.count())) return { status: 'failed', msg: 'الوقت «' + lab + '» غير متاح (ماضٍ أو خارج القائمة).' };
+        await tm.first().click();
       } else await drawer.getByText('إرسال الآن', { exact: true }).first().click();
       const send = drawer.getByRole('button', { name: 'إرسال هدية' });
       if (dry) return { status: 'dry_run', msg: 'تجربة: مُلئ نموذج بونات (قالب «' + want + '») ولم يُضغط الإرسال.' };
