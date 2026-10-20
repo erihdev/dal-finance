@@ -17,6 +17,7 @@ const drafter = require('./drafter').setup({ gas: o => gas(o), getBuf: () => buf
 const invoices = require('./invoices');
 const jobsMod = require('./jobs');
 const jobs = jobsMod.setup({ gas: o => gas(o), getBuf: () => buf, push: pusher.push, waha: (a, b) => waha(a, b) });
+const mk = require('./marketing').setup({ gas: o => gas(o) }); mk.start();   // العقل التسويقي: مقترحات فقط، لا إرسال
 const gfiles = require('./gfiles').setup({ gas: o => gas(o), waha: (a, b) => waha(a, b), wm, addDaily: l => jobs.addDaily(l), touch: m => jobs.touch(m) });
 let buf = [], dirty = false, timer = null, firstAt = 0, lastErr = '', lastOk = 0;
 const names = new Map();
@@ -210,6 +211,7 @@ const srv = http.createServer((req, res) => {
     }).catch(e => { res.writeHead(500); res.end(String(e.message)); });
     return;
   }
+  if (req.method === 'GET' && req.url === '/mk/status') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(mk.status())); }
   if (req.method === 'POST' && req.url === '/push/send') {   // إشعار من متصفح دال (بمفتاح): تنبيهات حدود المخزون وغيرها
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     let b = ''; req.on('data', c => { b += c; if (b.length > 1e5) req.destroy(); });
