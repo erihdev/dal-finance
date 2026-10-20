@@ -78,9 +78,9 @@ function setup({ gas }) {
       if (fresh.length) await set('mk_props', { at: now, items: props.concat(fresh).slice(-200) });
       S.at = now; S.n += fresh.length; S.err = null;
     } catch (e) { S.err = String(e.message || e).slice(0, 160); }
-    finally { S.busy = false; }
+    finally { S.busy = false; console.log('mk run', reason, JSON.stringify({ n: S.n, err: S.err })); set('mk_status', Object.assign({}, S, { reason })).catch(() => {}); }
   }
-  async function checkReq() { try { const r = await get('mk_req'); const ts = (r && r.ts) || 0; if (!S.init) { S.init = true; S.lastReq = ts; return; } if (ts && ts !== S.lastReq) { S.lastReq = ts; await run('request'); } } catch (e) {} }   // أول قراءة بعد التشغيل تحفظ آخر طلب فقط
+  async function checkReq() { try { const r = await get('mk_req'); const ts = (r && r.ts) || 0; if (!S.init) { S.init = true; S.lastReq = ts; return; } if (ts && ts !== S.lastReq) { S.lastReq = ts; console.log('mk request', ts); await run('request'); } } catch (e) { console.log('mk req err', e.message); } }   // أول قراءة بعد التشغيل تحفظ آخر طلب فقط
   function daily() { const k = new Date(Date.now() + 3 * 3600e3); if (k.getUTCHours() === 9 && k.getUTCMinutes() < 10) run('daily'); }
   return { start() { setTimeout(checkReq, 30e3); setInterval(checkReq, 30e3); setInterval(daily, 10 * 60e3); }, run, status: () => Object.assign({}, S), KNOW, CAL };
 }
