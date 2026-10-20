@@ -11,13 +11,14 @@ const E = process.env; const fs = require('fs');
 const USER = E.VIEW_USER || 'dal', PASS = E.VIEW_PASSWORD || '';
 const GAS = E.GAS_URL, KEY = E.DAL_KEY, POLL = (+E.POLL_MIN || 5) * 60e3;
 const WMDIR = '/data/wamedia';   // مرفقات واتساب الخاصة (تُحذف بعد 45 يومًا)
-const FAST = Math.max(30, +E.FAST_SEC || 30) * 1000, FAST_K = ['foodics', 'retm'];   // أرقام المبيعات كل 30 ثانية
-const SITES = [
+const FAST = Math.max(30, +E.FAST_SEC || 30) * 1000, RETM_ON = E.RETM_LIVE === '1', FAST_K = RETM_ON ? ['foodics', 'retm'] : ['foodics'];   // أرقام المبيعات كل 30 ثانية. رتم متوقف (20-10-2026): المزامنة اللحظية لفودكس فقط؛ RETM_LIVE=1 يعيد رتم
+const SITES_ALL = [
   { k: 'foodics', name: 'فودكس', url: 'https://console.foodics.com/', login: /login|auth|signin/i },
   { k: 'retm', name: 'رتم', url: 'https://retm.sa/dashboard?period=1', login: /login|signin/i },
   { k: 'bonat', name: 'بونات', url: 'https://store.bonat.io/', login: /login|signin/i },
   // تمارا: أُوقفت قراءتها بطلب ضيف الله (لا تحتاج الآن)؛ تقرير حساب يقرؤها عند الطلب فقط
 ];
+const SITES = RETM_ON ? SITES_ALL : SITES_ALL.filter(s => s.k !== 'retm');   // رتم خارج الدورات ما لم يُفعَّل
 let ctx = null, state = { at: null, sites: {} }, busy = false, viewers = 0, lastView = 0;
 const SLOGF = '/data/sales_log.json'; let SLOG = {}; try { SLOG = JSON.parse(fs.readFileSync(SLOGF, 'utf8')); } catch (e) {}
 
@@ -188,7 +189,7 @@ async function retmRefresh(why) {
     await p.waitForFunction(() => /\d/.test((document.body && document.body.innerText) || '') && !document.querySelector('.pace-running'), null, { timeout: 12000 }).catch(() => {});
     await p.waitForTimeout(1200);
     const url = p.url(); const text = (await p.evaluate(() => document.body ? document.body.innerText : '')).replace(/\n{3,}/g, '\n\n').trim().slice(0, 8000);
-    const s = SITES.find(x => x.k === 'retm'); const needLogin = s.login.test(url) || /تسجيل الدخول|Sign in|Log in|كلمة المرور|Password/i.test(text.slice(0, 600));
+    const s = SITES_ALL.find(x => x.k === 'retm'); const needLogin = s.login.test(url) || /تسجيل الدخول|Sign in|Log in|كلمة المرور|Password/i.test(text.slice(0, 600));
     state.sites.retm = { name: s.name, at: new Date().toISOString(), ok: !needLogin, needLogin, url, text, via: why };
     RL.at = state.sites.retm.at; RL.err = needLogin ? 'needLogin' : null; RL.n++;
     if (why !== 'timer') await publishSales();
@@ -201,7 +202,7 @@ async function retmLive() {
     await p.exposeFunction('__dalRetmEv', ev => { RL.evAt = new Date().toISOString(); RL.evs = RL.evs.concat([String(ev).slice(0, 60)]).slice(-10); clearTimeout(rlTimer); rlTimer = setTimeout(() => retmRefresh('event'), 800); });
     // بعد كل تحميل للصفحة: ننتظر اتصال اللوحة بقناتها الحية ثم نستمع لأحداثها (أسماء الأحداث فقط تُسجّل، بلا بيانات)
     await p.addInitScript(() => { const tick = () => { const P = window.Pusher, i = P && P.instances && P.instances[0]; if (!i) return setTimeout(tick, 1000); if (i.__dal) return; i.__dal = 1; i.bind_global(ev => { if (!/^pusher[:_]/.test(ev)) window.__dalRetmEv(ev); }); }; tick(); });
-    await p.goto(SITES.find(x => x.k === 'retm').url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await p.goto(SITES_ALL.find(x => x.k === 'retm').url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await p.waitForTimeout(6000); await retmRefresh('start');
     console.log('retm live', RL.err || 'ok');
   } catch (e) { RL.err = String(e.message || e).slice(0, 120); console.log('retm live err', RL.err); }
@@ -699,5 +700,5 @@ const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, getCtx
 
 if (require.main !== module) { module.exports = { STAFF_PAGES, DOCS, XR, docPdf, docSign, docsRead, srv, SF }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { SF.start(); FX.start(); KEEP.start(); MK.start(); setTimeout(retmLive, 3e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { SF.start(); FX.start(); KEEP.start(); MK.start(); if (RETM_ON) setTimeout(retmLive, 3e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }
