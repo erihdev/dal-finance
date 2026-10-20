@@ -74,6 +74,7 @@ function setup({ gas }) {
 المقترحات الحالية بانتظار الاعتماد: ${JSON.stringify(pending.map(p => p.title))}
 المرفوضة مؤخراً: ${JSON.stringify(rejected)}`;
       const out = await claude(user);
+      { const L0 = out.proposals || []; console.log('mk raw', typeof out.proposals, L0.length, JSON.stringify(L0.map(x => [x && x.key, x && x.platform])).slice(0, 300), JSON.stringify(out).slice(0, 200)); if (typeof out.proposals === 'string') { try { out.proposals = JSON.parse(out.proposals); } catch (e) {} } }
       const now = new Date().toISOString(); const keys = new Set(props.filter(p => !D[p.id] || D[p.id].act !== 'reject').map(p => p.key));
       const fresh = (out.proposals || []).filter(x => x && x.key && !keys.has(x.key) && KNOW[x.platform]).map((x, i) => Object.assign({}, x, {
         id: 'MK' + Date.now().toString(36) + i, at: now, platformName: KNOW[x.platform].name, by: 'claude', reason: reason || 'daily' }));
