@@ -48,8 +48,61 @@ module.exports = function mkExec(d) {
   }
 
   // ---------- 2) بوابة الاعتماد والتنفيذ ----------
+  // ---------- منفّذ بونات: «إرسال هدية من قالب» في store.bonat.io/gifts ----------
+  /* ما تم التحقق منه (20 أكتوبر 2026، قراءة فقط، بلا إرسال):
+     - الإرسال يتم من قالب موجود: بطاقة القالب ← زر «إرسال هدية» ← درج «أرسل هدية من القالب».
+     - الدرج: «جميع العملاء» | «عملاء محددون» (يفتح «إختر عملاء للإهداء»)، ثم «إرسال الآن» | «جدولة الإرسال»، وأسفله «إرسال هدية» (submit).
+     - شاشة اختيار العملاء: شرائح الولاء (عميل جديد/مفقود/محتمل/مميز/وفي/دائم)، خانة «عملاء الميلاد» (تُرسل الهدية يوم ميلاد العميل فقط)،
+       الجنس، العمر، المدن، الفروع، آخر زيارة، عملاء التطبيق، وقائمة مخصصة (بحث باسم/جوال + «إضافة أرقام»)، ثم «حفظ الاختيار».
+     - إنشاء القالب (نسبة مئوية): عنوان القالب، قيمة الخصم %، الحد الأعلى، عنوان إنجليزي/عربي (70 حرفاً)، ينطبق على، الصلاحية، تعطيل إعادة الإهداء.
+     لم يُتحقق منه بعد (لذلك يُرفض عمداً): واجهة تاريخ/وقت «جدولة الإرسال»، حقول إنشاء قالب «كوب قهوة/مبلغ ثابت»، وظيفة زر «إرسال الآن» داخل شاشة اختيار العملاء. */
+  const BONAT_SEG = { new: 'عميل جديد', lost: 'عميل مفقود', potential: 'عميل محتمل', vip: 'عميل مميز', loyal: 'عميل وفي', regular: 'عميل دائم' };
+  const BONAT_SEG_AR = { 'العملاء الجدد': 'new', 'الجدد': 'new', 'المفقودون': 'lost', 'العملاء المفقودين': 'lost', 'المحتملون': 'potential', 'العملاء المحتملين': 'potential', 'المميزون': 'vip', 'العملاء المميزون': 'vip', 'الأوفياء': 'loyal', 'العملاء الأوفياء': 'loyal', 'الدائمون': 'regular', 'العملاء الدائمين': 'regular' };
+  const normPhone = s => { const d = String(s || '').replace(/\D/g, ''); return d.startsWith('966') ? '+' + d : d.startsWith('05') ? '+966' + d.slice(1) : d.startsWith('5') ? '+966' + d : d; };
+  async function bonatGift(prop, dec) {
+    const dry = E.MK_BONAT_DRY !== '0';                 // الافتراضي تجربة: يملأ ولا يضغط الإرسال النهائي إلا إذا MK_BONAT_DRY=0
+    const test = normPhone(E.MK_BONAT_TEST_PHONE);      // حارس الاختبار: إن وُجد لا يُرسَل إلا إلى هذا الرقم
+    const aud = prop.audience || {}, copy = prop.copy || {};
+    if (prop.action !== 'gift') return { status: 'unsupported', msg: 'بونات: المنفّذ يدعم «هدية» فقط.' };
+    if (prop.schedule && prop.schedule !== 'now') return { status: 'unsupported', msg: 'جدولة الإرسال في بونات لم يُتعلَّم نموذجها بعد — أرسل الآن أو جدول يدوياً.' };
+    const phone = aud.phone ? normPhone(aud.phone) : null;
+    const seg = BONAT_SEG_AR[aud.segment] || (BONAT_SEG[aud.segment] ? aud.segment : null);
+    if (!phone && !seg && !aud.birthday) return { status: 'unsupported', msg: 'بونات: حدّد عميلاً (aud.phone) أو شريحة ولاء أو عملاء الميلاد.' };
+    if (test && (!phone || phone !== test)) return { status: 'blocked', msg: 'وضع الاختبار: الإرسال مسموح لرقم الاختبار فقط.' };
+    return keep.withPage('bonat', async p => {
+      await p.goto('https://store.bonat.io/gifts', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+      await p.waitForSelector('text=قوالب الهدايا', { timeout: 20000 });
+      // القالب: يُطابَق بعنوانه العربي حرفياً (لا إنشاء تلقائي لقوالب جديدة)
+      const want = String(copy.title_ar || prop.templateTitle || '').trim();
+      if (!want) return { status: 'needs_template', msg: 'لم يُحدَّد عنوان القالب (copy.title_ar).' };
+      const card = p.locator('div').filter({ hasText: want }).filter({ has: p.getByRole('button', { name: 'إرسال هدية' }) }).last();
+      if (!(await card.count())) return { status: 'needs_template', msg: 'لا يوجد قالب بعنوان «' + want + '» في بونات — يُنشأ يدوياً أولاً.' };
+      await card.getByRole('button', { name: 'إرسال هدية' }).click();
+      const drawer = p.getByRole('dialog').filter({ hasText: 'أرسل هدية من القالب' });
+      await drawer.waitFor({ timeout: 10000 });
+      if (phone || seg || aud.birthday) {
+        await drawer.getByText('عملاء محددون').click();
+        const pick = p.getByRole('dialog').filter({ hasText: 'إختر عملاء للإهداء' }).last();
+        await pick.waitFor({ timeout: 10000 });
+        if (seg) await pick.getByText(BONAT_SEG[seg] || seg, { exact: true }).click();
+        if (aud.birthday) await pick.locator('label', { hasText: 'عملاء الميلاد' }).locator('input[type=checkbox]').check({ force: true });
+        if (phone) {
+          const inp = pick.getByRole('combobox', { name: 'select-customer-input' }); await inp.fill(phone.replace('+966', '0'));
+          await p.waitForTimeout(1500);
+          const hit = pick.locator('[role=option]').first(); if (!(await hit.count())) return { status: 'failed', msg: 'لم يُعثر على العميل برقم الاختبار في بونات.' };
+          await hit.click();
+        }
+        await pick.getByRole('button', { name: 'حفظ الاختيار' }).click();
+      } else await drawer.getByText('جميع العملاء').click();
+      await drawer.getByText('إرسال الآن', { exact: true }).first().click();
+      const send = drawer.getByRole('button', { name: 'إرسال هدية' });
+      if (dry) return { status: 'dry_run', msg: 'تجربة: مُلئ نموذج بونات (قالب «' + want + '») ولم يُضغط الإرسال.' };
+      await send.click(); await p.waitForTimeout(3000);
+      return { status: 'sent', msg: 'أُرسلت الهدية من القالب «' + want + '».' };
+    });
+  }
   const ADAPTERS = {   // كل منفّذ يُفعَّل بعد تعلّم نموذج الإرسال في المنصة واختباره مع المالك
-    bonat: null, pullup: null, salla: null, foodics: null,
+    bonat: bonatGift, pullup: null, salla: null, foodics: null,
   };
   async function poll() {
     if (!gas) return;
