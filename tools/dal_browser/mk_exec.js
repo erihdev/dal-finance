@@ -55,7 +55,8 @@ module.exports = function mkExec(d) {
      - شاشة اختيار العملاء: شرائح الولاء (عميل جديد/مفقود/محتمل/مميز/وفي/دائم)، خانة «عملاء الميلاد» (تُرسل الهدية يوم ميلاد العميل فقط)،
        الجنس، العمر، المدن، الفروع، آخر زيارة، عملاء التطبيق، وقائمة مخصصة (بحث باسم/جوال + «إضافة أرقام»)، ثم «حفظ الاختيار».
      - إنشاء القالب (نسبة مئوية): عنوان القالب، قيمة الخصم %، الحد الأعلى، عنوان إنجليزي/عربي (70 حرفاً)، ينطبق على، الصلاحية، تعطيل إعادة الإهداء.
-     لم يُتحقق منه بعد (لذلك يُرفض عمداً): واجهة تاريخ/وقت «جدولة الإرسال»، حقول إنشاء قالب «كوب قهوة/مبلغ ثابت»، وظيفة زر «إرسال الآن» داخل شاشة اختيار العملاء. */
+     الجدولة (20 أكتوبر، قراءة فقط): خيار «جدولة الإرسال» يُظهر حقل «اختر التاريخ» ← تقويم + قائمة أوقات كل 30 دقيقة («6:30 ص»)، والأيام الماضية معطّلة، وزر الإرسال معطّل حتى يكتمل.
+     لم يُتحقق منه بعد (لذلك يُرفض عمداً): حقول إنشاء قالب «كوب قهوة/مبلغ ثابت»، وظيفة زر «إرسال الآن» داخل شاشة اختيار العملاء. أصناف الـ DOM لمُنتقي الجدولة (flatpickr) مستنتجة من الشكل ولم تُجرَّب. */
   const BONAT_SEG = { new: 'عميل جديد', lost: 'عميل مفقود', potential: 'عميل محتمل', vip: 'عميل مميز', loyal: 'عميل وفي', regular: 'عميل دائم' };
   const BONAT_SEG_AR = { 'العملاء الجدد': 'new', 'الجدد': 'new', 'المفقودون': 'lost', 'العملاء المفقودين': 'lost', 'المحتملون': 'potential', 'العملاء المحتملين': 'potential', 'المميزون': 'vip', 'العملاء المميزون': 'vip', 'الأوفياء': 'loyal', 'العملاء الأوفياء': 'loyal', 'الدائمون': 'regular', 'العملاء الدائمين': 'regular' };
   const normPhone = s => { const d = String(s || '').replace(/\D/g, ''); return d.startsWith('966') ? '+' + d : d.startsWith('05') ? '+966' + d.slice(1) : d.startsWith('5') ? '+966' + d : d; };
@@ -64,7 +65,8 @@ module.exports = function mkExec(d) {
     const test = normPhone(E.MK_BONAT_TEST_PHONE);      // حارس الاختبار: إن وُجد لا يُرسَل إلا إلى هذا الرقم
     const aud = prop.audience || {}, copy = prop.copy || {};
     if (prop.action !== 'gift') return { status: 'unsupported', msg: 'بونات: المنفّذ يدعم «هدية» فقط.' };
-    if (prop.schedule && prop.schedule !== 'now') return { status: 'unsupported', msg: 'جدولة الإرسال في بونات لم يُتعلَّم نموذجها بعد — أرسل الآن أو جدول يدوياً.' };
+    const sm = prop.schedule && prop.schedule !== 'now' ? String(prop.schedule).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/) : null;
+    if (prop.schedule && prop.schedule !== 'now' && (!sm || +sm[5] % 30)) return { status: 'unsupported', msg: 'الجدولة تُقبل بصيغة YYYY-MM-DD HH:mm وبخطوة نصف ساعة فقط (قائمة أوقات بونات).' };
     const phone = aud.phone ? normPhone(aud.phone) : null;
     const seg = BONAT_SEG_AR[aud.segment] || (BONAT_SEG[aud.segment] ? aud.segment : null);
     if (!phone && !seg && !aud.birthday) return { status: 'unsupported', msg: 'بونات: حدّد عميلاً (aud.phone) أو شريحة ولاء أو عملاء الميلاد.' };
@@ -94,7 +96,20 @@ module.exports = function mkExec(d) {
         }
         await pick.getByRole('button', { name: 'حفظ الاختيار' }).click();
       } else await drawer.getByText('جميع العملاء').click();
-      await drawer.getByText('إرسال الآن', { exact: true }).first().click();
+      if (sm) {   // جدولة: خيار «جدولة الإرسال» ← حقل «اختر التاريخ» (تقويم Flatpickr + قائمة أوقات 30 دقيقة بصيغة «6:30 ص»؛ الأيام الماضية معطّلة)
+        await drawer.getByText('جدولة الإرسال').click();
+        await drawer.getByPlaceholder('اختر التاريخ').click();
+        const cal = p.locator('.flatpickr-calendar.open').last();
+        const mi = +sm[2] - 1, yi = +sm[1], dy = +sm[3];
+        for (let i = 0; i < 12; i++) {   // التنقل للشهر المطلوب (لا يدعم الرجوع للماضي)
+          const cur = await cal.evaluate(el => { const m = el.querySelector('.cur-month,.flatpickr-monthDropdown-months'), y = el.querySelector('.cur-year'); return [m && (m.value !== undefined && m.tagName === 'SELECT' ? +m.value : m.textContent), y && +y.value]; }).catch(() => null);
+          if (cur && cur[1] === yi && +cur[0] === mi) break;
+          await cal.locator('.flatpickr-next-month').click();
+        }
+        await cal.locator('.flatpickr-day:not(.prevMonthDay):not(.nextMonthDay):not(.flatpickr-disabled)').filter({ hasText: new RegExp('^\\s*' + dy + '\\s*$') }).first().click();
+        const h = +sm[4], mm = sm[5], lab = ((h % 12) || 12) + ':' + mm + ' ' + (h < 12 ? 'ص' : 'م');
+        await p.getByText(lab, { exact: true }).first().click();
+      } else await drawer.getByText('إرسال الآن', { exact: true }).first().click();
       const send = drawer.getByRole('button', { name: 'إرسال هدية' });
       if (dry) return { status: 'dry_run', msg: 'تجربة: مُلئ نموذج بونات (قالب «' + want + '») ولم يُضغط الإرسال.' };
       await send.click(); await p.waitForTimeout(3000);
