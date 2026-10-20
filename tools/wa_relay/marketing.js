@@ -40,7 +40,7 @@ const RULES = `قواعد لا تُكسر:
 - لا تكرر مقترحاً بنفس الفكرة موجوداً في «المقترحات الحالية»، وتعلّم من «المرفوضة».`;
 const SYS = `أنت مسؤول التسويق في «محمصة دال للقهوة المختصة» (صبيا، جازان). تجهّز مقترحات حملات جاهزة ليعتمدها المالك بضغطة، ثم تُنفَّذ في المنصة.
 ${RULES}
-أعد JSON فقط: {"proposals":[{"key":"معرّف قصير ثابت للفكرة بالإنجليزية","kind":"birthday|winback|occasion|product|loyalty|cart","title":"عنوان المقترح للمالك","platform":"bonat|pullup|salla","action":"gift|push|offer|coupon|promo|campaign","audience":{"segment":"اسم الشريحة كما في المنصة","label":"وصف للمالك","est":عدد تقديري أو null},"offer":{"type":"free_item|percent|fixed|none","item":"اسم المنتج كما في فودكس أو null","value":رقم أو null,"max":رقم أو null,"expires":"3d|1w|2w|1m|null"},"copy":{"title_ar":"","title_en":"","body_ar":"","body_en":""},"creative":{"headline_ar":"","headline_en":"","sub_ar":"","sub_en":"","product":"اسم المنتج للصورة أو null","sizes":["1080x1920","1080x1350","1680x735"]},"schedule":"now أو تاريخ ووقت مقترح YYYY-MM-DD HH:mm","why":["دليل 1","دليل 2"],"cost":{"per_unit_sar":رقم أو null,"est_units":رقم أو null,"est_total_sar":رقم أو null,"note":"افتراضك"}}]}
+سلّم عبر الأداة submit_proposals بهذا الشكل: {"proposals":[{"key":"معرّف قصير ثابت للفكرة بالإنجليزية","kind":"birthday|winback|occasion|product|loyalty|cart","title":"عنوان المقترح للمالك","platform":"bonat|pullup|salla","action":"gift|push|offer|coupon|promo|campaign","audience":{"segment":"اسم الشريحة كما في المنصة","label":"وصف للمالك","est":عدد تقديري أو null},"offer":{"type":"free_item|percent|fixed|none","item":"اسم المنتج كما في فودكس أو null","value":رقم أو null,"max":رقم أو null,"expires":"3d|1w|2w|1m|null"},"copy":{"title_ar":"","title_en":"","body_ar":"","body_en":""},"creative":{"headline_ar":"","headline_en":"","sub_ar":"","sub_en":"","product":"اسم المنتج للصورة أو null","sizes":["1080x1920","1080x1350","1680x735"]},"schedule":"now أو تاريخ ووقت مقترح YYYY-MM-DD HH:mm","why":["دليل 1","دليل 2"],"cost":{"per_unit_sar":رقم أو null,"est_units":رقم أو null,"est_total_sar":رقم أو null,"note":"افتراضك"}}]}
 أعد من 3 إلى 6 مقترحات متنوعة (منصات وأهداف مختلفة)، الأقوى أولاً.`;
 
 function setup({ gas }) {
@@ -49,9 +49,11 @@ function setup({ gas }) {
   const S = { at: null, n: 0, err: null, lastReq: 0, busy: false };
   async function claude(user) {
     const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': AKEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, max_tokens: 6000, system: SYS, messages: [{ role: 'user', content: user }] }) });
+      body: JSON.stringify({ model: MODEL, max_tokens: 8000, system: SYS, messages: [{ role: 'user', content: user }],
+        tools: [{ name: 'submit_proposals', description: 'سلّم المقترحات بالشكل المحدد في التعليمات', input_schema: { type: 'object', properties: { proposals: { type: 'array', items: { type: 'object' } } }, required: ['proposals'] } }],
+        tool_choice: { type: 'tool', name: 'submit_proposals' } }) });   // مخرجات منظّمة: لا أخطاء JSON من علامات التنصيص في النص العربي
     const j = await r.json(); if (!r.ok) throw new Error('claude ' + r.status + ' ' + JSON.stringify(j).slice(0, 160));
-    const raw = (j.content || []).map(c => c.text || '').join(''); return JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
+    const tu = (j.content || []).find(c => c.type === 'tool_use'); if (!tu) throw new Error('no-tool-output'); return tu.input || {};
   }
   const today = () => new Date(Date.now() + 3 * 3600e3).toISOString().slice(0, 10);
   async function run(reason) {
