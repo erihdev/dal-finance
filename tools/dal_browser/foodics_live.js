@@ -60,10 +60,65 @@ module.exports = function foodicsLive(d) {
     return out.slice(0, 40);
   }
 
+  // ---------- مبيعات اليوم من طلبات فودكس: الأكثر مبيعاً، طرق الدفع، ومقارنة أمس بنفس الوقت ----------
+  const O = new Map(); let ordAt = 0, ordFull = 0;   // الطلبات المختصرة لآخر يومين عمل (في الذاكرة)
+  async function pullOrders(p, full) {
+    if (!/^https:\/\/console\.foodics\.com\//.test(p.url())) { await p.goto('https://console.foodics.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }); await p.waitForTimeout(1500); }
+    const since = full ? 0 : ordAt - 15 * 60e3;
+    return p.evaluate(async (since) => {
+      const ar = s => /[؀-ۿ]/.test(s || ''); const nm = o => o ? (ar(o.name) ? o.name : ar(o.name_localized) ? o.name_localized : (o.name || '')) : '';
+      const out = []; let pg = 1, last = 1, dates = new Set(), stop = false;
+      do {
+        const r = await fetch('/core-api/listing?url=/orders&page=' + pg + '&with_total=true&include[]=payments.payment_method&include[]=products.product', { credentials: 'include', headers: { Accept: 'application/json' } });
+        if (!r.ok) throw new Error('orders:' + r.status); const j = await r.json(); last = (j.meta && j.meta.last_page) || 1;
+        for (const o of (j.data || [])) {
+          dates.add(o.business_date);
+          out.push([o.id, o.business_date, o.status, +o.total_price || 0, o.closed_at || o.opened_at || o.created_at,
+            (o.payments || []).map(x => [nm(x.payment_method) || (x.payment_method && x.payment_method.name) || '؟', +x.amount || 0]),
+            (o.products || []).map(x => [nm(x.product), (+x.quantity || 0) - (+x.returned_quantity || 0), +x.total_price || 0])]);
+          if (since && Date.parse((o.updated_at || o.created_at).replace(' ', 'T') + 'Z') < since) stop = true;
+        }
+        if (dates.size > 2) stop = true;   // تجاوزنا اليومين
+        pg++;
+      } while (!stop && pg <= last && pg < 60);
+      return out;
+    }, since);
+  }
+  const PAY_AR = { cash: 'نقد', card: 'شبكة', mada: 'مدى', visa: 'فيزا', 'master card': 'ماستركارد', mastercard: 'ماستركارد', 'apple pay': 'Apple Pay', tamara: 'تمارا', tabby: 'تابي', jahez: 'جاهز', 'jahez-paid': 'جاهز', 'hunger station': 'هنقرستيشن', 'pullup - pay at store (card)': 'بول أب (شبكة)', 'pullup - pay at store (cash)': 'بول أب (نقد)' };
+  const payName = n => PAY_AR[String(n).toLowerCase()] || n;
+  function salesDoc() {
+    const ds = [...new Set([...O.values()].map(o => o[1]))].sort(); const today = ds[ds.length - 1], yday = ds[ds.length - 2] || null;
+    const ts = o => Date.parse(String(o[4]).replace(' ', 'T') + 'Z');
+    const cut = Date.now() - 864e5;
+    const agg = (list) => { const r = { orders: 0, net: 0, returns: 0, voids: 0 }; for (const o of list) { if (o[2] === 4) { r.orders++; r.net += o[3]; } else if (o[2] === 5) r.returns++; else if (o[2] === 7) r.voids++; } r.net = Math.round(r.net * 100) / 100; r.avg = r.orders ? Math.round(r.net / r.orders * 100) / 100 : null; return r; };
+    const T = [...O.values()].filter(o => o[1] === today), Y = yday ? [...O.values()].filter(o => o[1] === yday) : [];
+    const pay = {}, prod = {}, hours = Array(24).fill(0);
+    for (const o of T) { if (o[2] !== 4) continue;
+      for (const [n, a] of o[5]) { const k = payName(n); pay[k] = pay[k] || [k, 0, 0]; pay[k][1]++; pay[k][2] += a; }
+      for (const [n, q, v] of o[6]) { if (!n || q <= 0) continue; prod[n] = prod[n] || [n, 0, 0]; prod[n][1] += q; prod[n][2] += v; }
+      const h = new Date(ts(o) + 3 * 3600e3).getUTCHours(); hours[h] += o[3]; }
+    const rnd = a => a.map(x => [x[0], x[1], Math.round(x[2] * 100) / 100]);
+    return { at: new Date().toISOString(), src: 'foodics-orders', today: Object.assign({ date: today }, agg(T)), ySame: yday ? Object.assign({ date: yday }, agg(Y.filter(o => ts(o) <= cut))) : null, yFull: yday ? Object.assign({ date: yday }, agg(Y)) : null,
+      payments: rnd(Object.values(pay).sort((a, b) => b[2] - a[2])), products: rnd(Object.values(prod).sort((a, b) => b[1] - a[1] || b[2] - a[2])).slice(0, 15), hours: hours.map(v => Math.round(v)) };
+  }
+  let lastSalesSig = '';
+  async function runOrders() {
+    const full = !ordFull || Date.now() - ordFull > 10 * 60e3;
+    const rows = await KEEP.withPage('console', p => pullOrders(p, full));
+    if (full) O.clear();
+    for (const r of rows) O.set(r[0], r);
+    const keepD = [...new Set([...O.values()].map(o => o[1]))].sort().slice(-2); for (const [k, o] of O) if (!keepD.includes(o[1])) O.delete(k);
+    ordAt = Date.now(); if (full) ordFull = ordAt;
+    const doc = salesDoc(); const sig = JSON.stringify([doc.today, doc.payments, doc.products]);
+    if (sig !== lastSalesSig || full) { await gas({ op: 'set', path: 'live/sales_fx', data: doc }); lastSalesSig = sig; }
+    S.ordN = O.size; S.ordAt = new Date(ordAt).toISOString();
+  }
+
   async function run(force) {
     if (S.busy) return; const ctx = getCtx(); if (!ctx || !gas || !KEEP) return; S.busy = true;
     try {
       const con = await KEEP.withPage('console', p => pullConsole(p));   // من تبويب الكونسول الدائم، بلا تبويبات طارئة
+      try { await runOrders(); S.ordErr = null; } catch (e) { S.ordErr = String(e.message || e).slice(0, 80); }
       const cur = S.last || await gas({ op: 'get', paths: ['live/foodics'] }).then(r => { const x = r.docs && r.docs['live/foodics']; return x && x.data || null; }).catch(() => null);
       const old = cur && cur.con || null;
       let acc = cur && cur.acc || null;
@@ -88,6 +143,6 @@ module.exports = function foodicsLive(d) {
     start() { setTimeout(() => run(true), 20e3); setInterval(() => run(false), EVERY); },
     kick() { clearTimeout(tm); tm = setTimeout(() => run(false), 5e3); },   // ويب هوك تغيّر المنيو (حين يُربط تطبيق فودكس)
     run, diff,
-    status() { return { paused: S.paused || null, at: S.at, wrote: S.wrote, n: S.n, err: S.err, accErr: S.accErr, needLogin: S.needLogin, every: EVERY / 1000 }; },
+    status() { return { paused: S.paused || null, ordN: S.ordN || 0, ordAt: S.ordAt || null, ordErr: S.ordErr || null, at: S.at, wrote: S.wrote, n: S.n, err: S.err, accErr: S.accErr, needLogin: S.needLogin, every: EVERY / 1000 }; },
   };
 };
