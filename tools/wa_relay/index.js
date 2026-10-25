@@ -33,6 +33,11 @@ async function waha(path, raw) {
   if (raw) return r;
   if (!r.ok) throw new Error('waha ' + r.status); return r.json();
 }
+async function wahaPost(path, body) {
+  const r = await fetch(WAHA + path, { method: 'POST', headers: { 'X-Api-Key': WKEY, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
+  const t = await r.text(); if (!r.ok) throw new Error('waha-post ' + r.status + ' ' + t.slice(0, 120));
+  try { return JSON.parse(t); } catch (e) { return {}; }
+}
 async function chatName(cid, isGroup, fallback) {
   const c = names.get(cid); if (c && Date.now() - c.at < 6 * 3600e3) return c.n;
   let n = '';
@@ -80,17 +85,20 @@ async function onMsg(p) {
   const chat = await chatName(cid, isGroup, (isGroup || me) ? '' : pushName);   // pushName في رسالتي الصادرة هو اسمي أنا
   if (EXCLUDE.some(x => x === chat || x === digits(cid))) return;
   if (isGroup && GROUPS.length && !GROUPS.includes(chat)) return;
-  if (isGroup && !jobsMod.isDal(chat)) return;   // قروبات غير دال (منتديات، عائلة): لا تُحفظ ولا تُتابع إطلاقًا
+  const isDalG = !isGroup || jobsMod.isDal(chat);   // قروبات غير دال: تدخل صندوق واتساب في التطبيق فقط، بلا متابعة ولا ردود مقترحة
   const who = me ? 'أنت' : (isGroup ? await whoOf(String(p.participant || p.author || ''), pushName) : chat);
-  if (p.hasMedia && isGroup) invoices.onMedia(p, chat, who, waha);
+  if (p.hasMedia && isGroup && isDalG) invoices.onMedia(p, chat, who, waha);
   const text = String(p.body || '').trim() || (p.hasMedia ? mediaLabel(p) : '');
-  const mf = !isGroup && !me && p.hasMedia ? await wm.fromPayload(p) : null;   // المرفق يظهر في بطاقة الرد بالتطبيق
+  const mf = p.hasMedia ? await wm.fromPayload(p) : null;   // المرفق يظهر في المحادثة وفي بطاقة الرد
   if (!text) return;
   const id = String(p.id && (p.id._serialized || p.id.id || p.id) || cid + ':' + p.timestamp);
+  try { chats.add(cid, { name: chat }, { id, t: (+p.timestamp || Date.now() / 1000) * 1000, me, x: text.slice(0, 2000), from: isGroup ? who : (me ? 'أنت' : undefined),
+    q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined, mf: mf || undefined }); } catch (e) { lastErr = 'chats ' + e.message; }
+  if (!isDalG) return;
   if (buf.some(x => x.id === id)) return;
   buf.push({ id, t: (+p.timestamp || Date.now() / 1000) * 1000, chat, g: isGroup, ph: isGroup ? '' : digits(cid),
     from: who, me, x: text.slice(0, 700),
-    q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined, mf: mf || undefined });
+    q: p.replyTo && p.replyTo.body ? String(p.replyTo.body).slice(0, 160) : undefined, md: p.hasMedia ? 1 : undefined, mf: (!isGroup && !me && mf) || undefined });
   schedule();
   const m = buf[buf.length - 1];
   try { drafter.onMessage(m); } catch (e) { lastErr = 'drafter ' + e.message; }
@@ -151,9 +159,12 @@ async function syncWaCustomers() {
 }
 async function checkCustReq() { try { const r = await gas({ op: 'get', paths: ['live/cust_req'] }); const d = r.docs && r.docs['live/cust_req']; const q = d && d.data; if (q && q.ts && q.ts !== lastCustReq) { lastCustReq = q.ts; await syncWaCustomers(); } } catch (e) { } }
 setInterval(checkCustReq, 600000); setInterval(syncWaCustomers, 24 * 3600e3); setTimeout(syncWaCustomers, 60000);
+const chats = require('./chats').setup({ gas: o => gas(o), waha: (a, b) => waha(a, b), wahaPost, session: SESSION, chatName, whoOf, pnOf, digits, wm,
+  exclude: (name, cid) => EXCLUDE.some(x => x === name || x === digits(cid)) });
+chats.start();
 const srv = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/cust') { syncWaCustomers(); res.writeHead(200); return res.end('ok'); }
-  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), push: pusher.status(), media: wm.status(), gfiles: gfiles.status() })); }
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: true, n: buf.length, lastOk, lastErr, drafts: drafter.status(), invoices: invoices.status(), jobs: jobs.status(), chats: chats.status(), push: pusher.status(), media: wm.status(), gfiles: gfiles.status() })); }
   if (req.method === 'POST' && req.url === '/gfiles/dedupe') {   // تنظيف المكرر في سجل الملفات (بمفتاح)
     if (!KEY || req.headers['x-dal-key'] !== KEY) { res.writeHead(401); return res.end(); }
     gfiles.dedupe().then(r => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(r)); }).catch(e => { res.writeHead(500); res.end(String(e.message)); }); return;
@@ -239,7 +250,7 @@ const srv = http.createServer((req, res) => {
 });
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('relay up'));
 seed();
-process.on('SIGTERM', async () => { await flush(); process.exit(0); });
+process.on('SIGTERM', async () => { await flush(); try { await chats.flushAll(); } catch (e) { } process.exit(0); });
 
 // مرفقات البطاقات المفتوحة التي وصلت قبل تفعيل حفظ المرفقات: نجلبها من WAHA مرة واحدة
 async function backfillMedia() {
