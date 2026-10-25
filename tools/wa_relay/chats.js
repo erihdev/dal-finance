@@ -86,6 +86,9 @@ function setup({ gas, waha, wahaPost, session, chatName, whoOf, pnOf, digits, wm
     const a = await loadArch(k); const have = new Set(a.msgs.map(m => m.id)); const cut = Date.now() - KEEP; let n = 0;
     for (const p of (Array.isArray(ms) ? ms : [])) { if ((+p.timestamp || 0) * 1000 < cut) continue; const m = await fromWaha(p, isGroup); if (!m || have.has(m.id)) continue; a.msgs.push(m); have.add(m.id); n++; }
     const meta = { id: cid, name, g: isGroup, ph: isGroup ? '' : digits(cid) };
+    // المرفقات القديمة: نجلب آخر 30 مرفقًا (آخر 14 يومًا) ونحفظها في متصفح دال لتظهر في التطبيق
+    if (wm) { const mcut = Date.now() - 14 * 864e5; const need = a.msgs.filter(m => m.md && !m.mf && !m.mfTry && m.t > mcut).sort((x, y) => y.t - x.t).slice(0, 30);
+      for (const m of need) { m.mfTry = 1; try { const full = await waha(`/api/${session}/chats/${encodeURIComponent(cid)}/messages/${encodeURIComponent(m.id)}?downloadMedia=true`); const mf = full && full.hasMedia ? await wm.fromPayload(full) : null; if (mf) m.mf = mf; } catch (e) { lastErr = 'media ' + String(e.message || e).slice(0, 80); } } }
     a.msgs = trim(a.msgs); a.dirty = true; a.meta = meta; await flushChat(k);
     const last = a.msgs[a.msgs.length - 1]; if (last) touchIdx(k, meta, last); else touchIdx(k, meta, null);
     filled.add(k); return { k, n };
