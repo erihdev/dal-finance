@@ -29,7 +29,20 @@ const START = `<!doctype html><meta charset=utf-8><title>متصفح دال</titl
 async function gas(o) {
   o.k = KEY;
   const r = await fetch(GAS, { method: 'POST', body: JSON.stringify(o), redirect: 'follow', headers: { 'Content-Type': 'text/plain' } });
-  const j = await r.json(); if (!j.ok) throw new Error('gas ' + j.err); return j;
+  const j = await r.json(); if (!j.ok) throw new Error('gas ' + j.err);
+  if (o.op === 'set' && /^live\//.test(o.path || '')) mirrorLive(o.path, o.data);   // نسخة لحظية إلى تطبيق «دال» (Firebase)
+  return j;
+}
+/* مرآة إلى تطبيق «دال»: كل ما يُكتب في live/* يُدفع فورًا إلى Firebase بنفس المفتاح DAL_KEY، فتتحدث شاشات التطبيق لحظيًا.
+   LIVE_URL=off يوقفها. لا تنتظر ولا تُعطّل الكتابة الأصلية إن فشلت. */
+const LIVE_URL = E.LIVE_URL || 'https://europe-west1-dal-chat-sa.cloudfunctions.net/liveIngest';
+const MIRROR = { at: null, err: null, n: 0 };
+const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report'];   // لا نصوص صفحات خام (web_now)
+function mirrorLive(path, data) {
+  if (LIVE_URL === 'off' || !KEY || !MIRROR_PATHS.includes(path)) return;
+  fetch(LIVE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-dal-key': KEY }, body: JSON.stringify({ path, data }), signal: AbortSignal.timeout(15000) })
+    .then(r => { if (!r.ok) throw new Error('live:' + r.status); MIRROR.at = new Date().toISOString(); MIRROR.err = null; MIRROR.n++; })
+    .catch(e => { MIRROR.err = String(e.message || e).slice(0, 80); });
 }
 function riyadhToday() {   // تاريخ اليوم بتوقيت الرياض (UTC+3)
   const d = new Date(Date.now() + 3 * 3600e3);
@@ -592,7 +605,7 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], sallaHook: Object.assign({ secret: !!E.SALLA_WEBHOOK_SECRET }, SWH), mk: MK.status(), keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, mirror: MIRROR, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], sallaHook: Object.assign({ secret: !!E.SALLA_WEBHOOK_SECRET }, SWH), mk: MK.status(), keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
