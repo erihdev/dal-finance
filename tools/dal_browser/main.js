@@ -33,14 +33,21 @@ async function gas(o) {
   if (o.op === 'set' && /^live\//.test(o.path || '')) mirrorLive(o.path, o.data);   // نسخة لحظية إلى تطبيق «دال» (Firebase)
   return j;
 }
-/* مرآة إلى تطبيق «دال»: كل ما يُكتب في live/* يُدفع فورًا إلى Firebase بنفس المفتاح DAL_KEY، فتتحدث شاشات التطبيق لحظيًا.
-   LIVE_URL=off يوقفها. لا تنتظر ولا تُعطّل الكتابة الأصلية إن فشلت. */
+/* مرآة إلى تطبيق «دال»: كل ما يُكتب في live/* يُدفع فورًا إلى Firebase فتتحدث شاشات التطبيق لحظيًا.
+   بلا مفتاح مشترك: كل دفعة تحمل رقمًا عشوائيًا (nonce)، وFirebase يعود إلى هذا الخادم على /mirror/verify ليطابق بصمة الجسم،
+   فلا يُقبل إلا ما خرج من هنا فعلًا. LIVE_URL=off يوقفها. لا تنتظر ولا تُعطّل الكتابة الأصلية إن فشلت. */
 const LIVE_URL = E.LIVE_URL || 'https://europe-west1-dal-chat-sa.cloudfunctions.net/liveIngest';
 const MIRROR = { at: null, err: null, n: 0 };
 const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report'];   // لا نصوص صفحات خام (web_now)
+const MIRROR_SENT = new Map();   // nonce → { hash, at } لآخر الدفعات (تُنسى بعد 10 دقائق)
 function mirrorLive(path, data) {
-  if (LIVE_URL === 'off' || !KEY || !MIRROR_PATHS.includes(path)) return;
-  fetch(LIVE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-dal-key': KEY }, body: JSON.stringify({ path, data }), signal: AbortSignal.timeout(15000) })
+  if (LIVE_URL === 'off' || !MIRROR_PATHS.includes(path)) return;
+  const nonce = require('crypto').randomUUID();
+  const body = JSON.stringify({ path, data, nonce, at: new Date().toISOString() });
+  const hash = require('crypto').createHash('sha256').update(body).digest('hex');
+  MIRROR_SENT.set(nonce, { hash, at: Date.now() });
+  for (const [k, v] of MIRROR_SENT) if (Date.now() - v.at > 10 * 60e3) MIRROR_SENT.delete(k);
+  fetch(LIVE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(20000) })
     .then(r => { if (!r.ok) throw new Error('live:' + r.status); MIRROR.at = new Date().toISOString(); MIRROR.err = null; MIRROR.n++; })
     .catch(e => { MIRROR.err = String(e.message || e).slice(0, 80); });
 }
@@ -605,6 +612,10 @@ const authed = req => {
   return c > 0 && i.slice(0, c) === USER && i.slice(c + 1) === PASS;
 };
 const srv = http.createServer((req, res) => {
+  if (req.url.startsWith('/mirror/verify?')) {   // يستخدمه Firebase للتأكد أن الدفعة خرجت من هنا (عام، يعيد بصمة فقط)
+    const nonce = new URL(req.url, 'http://x').searchParams.get('nonce') || ''; const m = MIRROR_SENT.get(nonce);
+    res.writeHead(m ? 200 : 404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(m ? { hash: m.hash } : { err: 'unknown' }));
+  }
   if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, mirror: MIRROR, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], sallaHook: Object.assign({ secret: !!E.SALLA_WEBHOOK_SECRET }, SWH), mk: MK.status(), keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
