@@ -38,7 +38,7 @@ async function gas(o) {
    فلا يُقبل إلا ما خرج من هنا فعلًا. LIVE_URL=off يوقفها. لا تنتظر ولا تُعطّل الكتابة الأصلية إن فشلت. */
 const LIVE_URL = E.LIVE_URL || 'https://europe-west1-dal-chat-sa.cloudfunctions.net/liveIngest';
 const MIRROR = { at: null, err: null, n: 0 };
-const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report', 'live/health'];   // لا نصوص صفحات خام (web_now)
+const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report', 'live/health', 'live/salla'];   // لا نصوص صفحات خام (web_now)
 const MIRROR_SENT = new Map();   // nonce → { hash, at } لآخر الدفعات (تُنسى بعد 10 دقائق)
 function mirrorLive(path, data) {
   if (LIVE_URL === 'off' || !MIRROR_PATHS.includes(path)) return;
@@ -137,6 +137,32 @@ async function readSalla(from, to) {   // ملخص طلبات سلة بين تا
     agg.sales = Math.round(agg.sales * 100) / 100; agg.refundAmount = Math.round(agg.refundAmount * 100) / 100;
     return { ok: true, stats: agg };
   } catch (e) { return { ok: false, err: String(e.message || e).slice(0, 120) }; }
+}
+/* ===== سلة لحظيًا (الواجهة الرسمية، بلا متصفح): طلبات اليوم وأمس، ما ينتظر تصرفًا، آخر الطلبات، والسلات المتروكة.
+   كل دقيقتين → live/salla (GAS عند التغيّر، ومرآة «دال» كل مرة). لا بيانات شخصية سوى الاسم الأول والمرجع. */
+const SL = { at: null, err: null, n: 0, linked: false, lastSig: '' };
+const SL_WAIT = new Set(['payment_pending', 'under_review', 'in_progress']);
+function sallaDay(offset) { const d = new Date(Date.now() + 3 * 3600e3 - (offset || 0) * 864e5); return d.toISOString().slice(0, 10); }
+async function sallaLive() {
+  if (!ctx) return;
+  try {
+    SL.linked = !!(SOAUTH && SOAUTH.refresh);
+    if (!SL.linked) throw new Error('salla-not-linked');
+    const today = sallaDay(0), yday = sallaDay(1);
+    const list = []; let page = 1, pages = 1;
+    do { const j = await sallaApi(`/admin/v2/orders?from_date=${yday}&to_date=${today}&per_page=50&page=${page}`); list.push(...(j.data || [])); pages = (j.pagination || {}).totalPages || 1; page++; } while (page <= pages && page <= 10);
+    const slug = o => String((o.status && (o.status.slug || o.status.name)) || o.status || 'unknown');
+    const total = o => num(o.amounts && (o.amounts.total || o.amounts.sub_total)) || num(o.total) || num(o.amount);
+    const day = o => String(o.date && (o.date.date || o.date) || o.created_at || '').slice(0, 10);
+    const agg = ds => { const L = list.filter(o => day(o) === ds); const r = { date: ds, orders: L.length, sales: 0, byStatus: {} }; for (const o of L) { if (!/cancel|restor/.test(slug(o))) r.sales += total(o); r.byStatus[slug(o)] = (r.byStatus[slug(o)] || 0) + 1; } r.sales = Math.round(r.sales * 100) / 100; return r; };
+    const waiting = list.filter(o => SL_WAIT.has(slug(o)));
+    const recent = list.slice(0, 10).map(o => ({ ref: o.reference_id || o.id, name: String((o.customer && (o.customer.first_name || o.customer.name)) || '').split(' ')[0], total: Math.round(total(o) * 100) / 100, status: slug(o), statusAr: (o.status && o.status.name) || slug(o), at: String(o.date && (o.date.date || o.date) || o.created_at || ''), ship: (o.shipping && o.shipping.company) || null }));
+    let abandoned = null; try { const j = await sallaApi('/admin/v2/carts/abandoned?per_page=1'); abandoned = (j.pagination && j.pagination.total) != null ? j.pagination.total : (j.data || []).length; } catch (e) { abandoned = null; }
+    const doc = { at: new Date().toISOString(), src: 'salla-api', today: agg(today), yesterday: agg(yday), waiting: waiting.length, waitingTotal: Math.round(waiting.reduce((s, o) => s + total(o), 0) * 100) / 100, recent, abandoned };
+    const sig = JSON.stringify([doc.today, doc.yesterday, doc.waiting, doc.recent.map(r => r.ref + r.status), doc.abandoned]);
+    if (GAS && KEY && sig !== SL.lastSig) { await gas({ op: 'set', path: 'live/salla', data: doc }); SL.lastSig = sig; } else mirrorLive('live/salla', doc);
+    SL.at = doc.at; SL.err = null; SL.n++;
+  } catch (e) { SL.err = String(e.message || e).slice(0, 100); mirrorLive('live/salla', { at: new Date().toISOString(), src: 'salla-api', linked: SL.linked, err: SL.err }); }
 }
 async function readSite(s) {   // فودكس وبونات من تبويبيهما الدائمين (بلا فتح/إغلاق)؛ غيرهما في تبويب مؤقت
   const kk = { foodics: 'console', bonat: 'bonat' }[s.k];
@@ -618,7 +644,7 @@ const srv = http.createServer((req, res) => {
     const nonce = new URL(req.url, 'http://x').searchParams.get('nonce') || ''; const m = MIRROR_SENT.get(nonce);
     res.writeHead(m ? 200 : 404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(m ? { hash: m.hash } : { err: 'unknown' }));
   }
-  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, mirror: MIRROR, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], sallaHook: Object.assign({ secret: !!E.SALLA_WEBHOOK_SECRET }, SWH), mk: MK.status(), keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
+  if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok: !!ctx, at: state.at, salesAt: SALES.at, mirror: MIRROR, salla: { linked: SL.linked, at: SL.at, err: SL.err, n: SL.n }, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], sallaHook: Object.assign({ secret: !!E.SALLA_WEBHOOK_SECRET }, SWH), mk: MK.status(), keep: KEEP.status(), vnc: VNC, fx: FX.status(), retm: { live: !!RL.page, at: RL.at, evAt: RL.evAt, evs: RL.evs, n: RL.n, err: RL.err }, sf: (() => { const s = SF.status(); return { linked: s.linked, hasClient: s.hasClient, at: s.at, err: s.err, mapped: s.mapped, counts: s.counts }; })() })); }   // fcounts: حالة قارئ الجرد (مسارات ومفاتيح فقط، بلا بيانات)
   if (req.url.startsWith('/salla/callback')) {   // عودة تفويض سلة (عامة): نبادل الكود بتوكن ونخزّنه
     return (async () => {
       try {
@@ -688,6 +714,10 @@ const srv = http.createServer((req, res) => {
   if (req.url === '/' || req.url === '') { res.writeHead(302, { Location: '/vnc.html?autoconnect=1&resize=scale&reconnect=1&quality=5&compression=7&show_dot=1&path=websockify' }); return res.end(); }
   if (req.method === 'POST' && req.url === '/import') return importSessions(req, res);
   if (req.url === '/poll') { poll(true); res.writeHead(200); return res.end('ok'); }
+  if (req.url.startsWith('/salla/connect')) {   // يضغطه المالك مرة واحدة ليربط متجر سلة (يفتح صفحة سلة للموافقة)
+    const u = 'https://accounts.salla.sa/oauth2/auth?' + new URLSearchParams({ client_id: E.SALLA_CLIENT_ID || '', response_type: 'code', redirect_uri: E.SALLA_REDIRECT || 'https://browser-production-10fb.up.railway.app/salla/callback', scope: 'offline_access', state: 'dal' + Date.now() });
+    res.writeHead(302, { Location: u }); return res.end();
+  }
   if (req.url === '/salla/status') {   // هل سلة مربوطة؟
     return (async () => { let ok = false, err = null; try { await sallaToken(); ok = true; } catch (e) { err = String(e.message || e); } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ linked: !!(SOAUTH && SOAUTH.refresh), tokenOk: ok, err, hasClientId: !!E.SALLA_CLIENT_ID })); })();
   }
@@ -726,5 +756,5 @@ const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, mirror
 
 if (require.main !== module) { module.exports = { STAFF_PAGES, DOCS, XR, docPdf, docSign, docsRead, srv, SF }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
-launch().then(() => { SF.start(); FX.start(); KEEP.start(); MK.start(); if (RETM_ON) setTimeout(retmLive, 3e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
+launch().then(() => { SF.start(); FX.start(); KEEP.start(); MK.start(); setTimeout(sallaLive, 20e3); setInterval(sallaLive, 2 * 60e3); if (RETM_ON) setTimeout(retmLive, 3e3); setTimeout(poll, 60e3); setInterval(poll, POLL); setTimeout(() => { fastSales(); setInterval(fastSales, FAST); }, 150e3); setInterval(checkReportReq, 60e3); dailyAt(4, syncCustomers); dailyAt(5, () => { try { for (const f of fs.readdirSync(WMDIR)) if (f.endsWith('.json')) { const m = JSON.parse(fs.readFileSync(WMDIR + '/' + f, 'utf8')); if (Date.now() - m.at > 45 * 864e5) { fs.rmSync(WMDIR + '/' + f, { force: true }); fs.rmSync(WMDIR + '/' + f.slice(0, -5), { force: true }); } } } catch (e) {} }); }).catch(e => { console.error(e); process.exit(1); });
 }
