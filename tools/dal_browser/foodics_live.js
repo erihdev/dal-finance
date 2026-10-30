@@ -87,18 +87,20 @@ module.exports = function foodicsLive(d) {
   const PAY_AR = { cash: 'نقد', card: 'شبكة', mada: 'مدى', visa: 'فيزا', 'master card': 'ماستركارد', mastercard: 'ماستركارد', 'apple pay': 'Apple Pay', tamara: 'تمارا', tabby: 'تابي', jahez: 'جاهز', 'jahez-paid': 'جاهز', 'hunger station': 'هنقرستيشن', 'pullup - pay at store (card)': 'بول أب (شبكة)', 'pullup - pay at store (cash)': 'بول أب (نقد)' };
   const payName = n => PAY_AR[String(n).toLowerCase()] || n;
   function salesDoc() {
-    const ds = [...new Set([...O.values()].map(o => o[1]))].sort(); const today = ds[ds.length - 1], yday = ds[ds.length - 2] || null;
+    // يوم العمل بتوقيت الرياض: الوردية تُقفل بعد منتصف الليل، فقبل الساعة ٥ فجرًا ما زلنا في يوم أمس. الطلبات المفتوحة بلا business_date لا تحدد اليوم.
+    const r = new Date(Date.now() + 3 * 3600e3); if (r.getUTCHours() < 5) r.setUTCDate(r.getUTCDate() - 1);
+    const today = r.toISOString().slice(0, 10); const yd = new Date(r); yd.setUTCDate(yd.getUTCDate() - 1); const yday = yd.toISOString().slice(0, 10);
     const ts = o => Date.parse(String(o[4]).replace(' ', 'T') + 'Z');
     const cut = Date.now() - 864e5;
     const agg = (list) => { const r = { orders: 0, net: 0, returns: 0, voids: 0 }; for (const o of list) { if (o[2] === 4) { r.orders++; r.net += o[3]; } else if (o[2] === 5) r.returns++; else if (o[2] === 7) r.voids++; } r.net = Math.round(r.net * 100) / 100; r.avg = r.orders ? Math.round(r.net / r.orders * 100) / 100 : null; return r; };
-    const T = [...O.values()].filter(o => o[1] === today), Y = yday ? [...O.values()].filter(o => o[1] === yday) : [];
+    const T = [...O.values()].filter(o => o[1] === today), Y = [...O.values()].filter(o => o[1] === yday);
     const pay = {}, prod = {}, hours = Array(24).fill(0);
     for (const o of T) { if (o[2] !== 4) continue;
       for (const [n, a] of o[5]) { const k = payName(n); pay[k] = pay[k] || [k, 0, 0]; pay[k][1]++; pay[k][2] += a; }
       for (const [n, q, v] of o[6]) { if (!n || q <= 0) continue; prod[n] = prod[n] || [n, 0, 0]; prod[n][1] += q; prod[n][2] += v; }
       const h = new Date(ts(o) + 3 * 3600e3).getUTCHours(); hours[h] += o[3]; }
     const rnd = a => a.map(x => [x[0], x[1], Math.round(x[2] * 100) / 100]);
-    return { at: new Date().toISOString(), src: 'foodics-orders', today: Object.assign({ date: today }, agg(T)), ySame: yday ? Object.assign({ date: yday }, agg(Y.filter(o => ts(o) <= cut))) : null, yFull: yday ? Object.assign({ date: yday }, agg(Y)) : null,
+    return { at: new Date().toISOString(), src: 'foodics-orders', today: Object.assign({ date: today }, agg(T)), ySame: Object.assign({ date: yday }, agg(Y.filter(o => ts(o) <= cut))), yFull: Object.assign({ date: yday }, agg(Y)),
       payments: rnd(Object.values(pay).sort((a, b) => b[2] - a[2])), products: rnd(Object.values(prod).sort((a, b) => b[1] - a[1] || b[2] - a[2])).slice(0, 15), hours: hours.map(v => Math.round(v)) };
   }
   let lastSalesSig = '';
@@ -107,10 +109,10 @@ module.exports = function foodicsLive(d) {
     const rows = await KEEP.withPage('console', p => pullOrders(p, full));
     if (full) O.clear();
     for (const r of rows) O.set(r[0], r);
-    const keepD = [...new Set([...O.values()].map(o => o[1]))].sort().slice(-2); for (const [k, o] of O) if (!keepD.includes(o[1])) O.delete(k);
+    const keepD = [...new Set([...O.values()].map(o => o[1]).filter(Boolean))].sort().slice(-3); for (const [k, o] of O) if (o[1] && !keepD.includes(o[1])) O.delete(k);
     ordAt = Date.now(); if (full) ordFull = ordAt;
     const doc = salesDoc(); const sig = JSON.stringify([doc.today, doc.payments, doc.products]);
-    if (sig !== lastSalesSig || full) { await gas({ op: 'set', path: 'live/sales_fx', data: doc }); lastSalesSig = sig; }
+    if (sig !== lastSalesSig || full) { await gas({ op: 'set', path: 'live/sales_fx', data: doc }); lastSalesSig = sig; } else if (d.mirror) d.mirror('live/sales_fx', doc);   // «دال» يأخذها كل دورة ليبقى المؤشر أخضر
     S.ordN = O.size; S.ordAt = new Date(ordAt).toISOString();
   }
 

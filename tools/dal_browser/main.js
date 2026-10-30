@@ -38,7 +38,7 @@ async function gas(o) {
    فلا يُقبل إلا ما خرج من هنا فعلًا. LIVE_URL=off يوقفها. لا تنتظر ولا تُعطّل الكتابة الأصلية إن فشلت. */
 const LIVE_URL = E.LIVE_URL || 'https://europe-west1-dal-chat-sa.cloudfunctions.net/liveIngest';
 const MIRROR = { at: null, err: null, n: 0 };
-const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report'];   // لا نصوص صفحات خام (web_now)
+const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report', 'live/health'];   // لا نصوص صفحات خام (web_now)
 const MIRROR_SENT = new Map();   // nonce → { hash, at } لآخر الدفعات (تُنسى بعد 10 دقائق)
 function mirrorLive(path, data) {
   if (LIVE_URL === 'off' || !MIRROR_PATHS.includes(path)) return;
@@ -186,6 +186,8 @@ async function publishSales() {
       r.ySame = best ? { revenue: best[1], invoices: best[2], at: yd + ' ' + String(Math.floor(best[0] / 60)).padStart(2, '0') + ':' + String(best[0] % 60).padStart(2, '0') } : null;
       r.today = SLOG[d].map(e => [e[0], e[1]]); fs.writeFileSync(SLOGF, JSON.stringify(SLOG)); } } catch (e) { }
     SALES.at = new Date().toISOString();
+    // نبض الصحة إلى «دال»: أي جلسة منتهية وآخر قراءة، كل دورة
+    mirrorLive('live/health', { at: SALES.at, needLogin: [...new Set((state.needLogin || []).concat(KEEP.needLogin()))], fx: FX ? FX.status() : null, ok: !!ctx });
     if (GAS && KEY && (SALES.retm || SALES.foodics)) await gas({ op: 'set', path: 'live/sales_now', data: SALES }).catch(e => console.log('gas', e.message));
 }
 let fastBusy = false;
@@ -720,7 +722,7 @@ setTimeout(vncCheck, 20e3); setInterval(vncCheck, 60e3);
 const SWH = { n: 0, at: null, evs: [], bad: 0 };   // ويب هوك سلة
 const KEEP = require('./keepalive')({ E, getCtx: () => ctx, notify: notifyOwner, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // تبويب ثابت لكل منصة يُحدَّث كل 30 ثانية
 const MK = require('./mk_exec')({ E, gas: (GAS && KEY) ? gas : null, keep: KEEP, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // العقل التسويقي: الذكاء + بوابة الاعتماد
-const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, getCtx: () => ctx, keep: KEEP, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // أرقام فودكس لحظية (الكونسول كل 30 ثانية، المحاسبي كل 10 دقائق)   // جسر سلة → فودكس
+const FX = require('./foodics_live')({ E, gas: (GAS && KEY) ? gas : null, mirror: mirrorLive, getCtx: () => ctx, keep: KEEP, viewing: () => viewers > 0 || Date.now() - lastView < 60e3 });   // أرقام فودكس لحظية (الكونسول كل 30 ثانية، المحاسبي كل 10 دقائق)   // جسر سلة → فودكس
 
 if (require.main !== module) { module.exports = { STAFF_PAGES, DOCS, XR, docPdf, docSign, docsRead, srv, SF }; } else {
 srv.listen(+E.PORT || 8080, E.HOST || '::', () => console.log('view up'));
