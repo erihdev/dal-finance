@@ -116,11 +116,39 @@ module.exports = function foodicsLive(d) {
     S.ordN = O.size; S.ordAt = new Date(ordAt).toISOString();
   }
 
+  // ---------- مستويات المخزون من تقرير فودكس (الكمية الفعلية لكل مادة): كل 10 دقائق → live/stock ----------
+  const STOCK_EVERY = 10 * 60e3; let stockAt = 0, stockSig = '';
+  async function pullStock(p) {
+    const items = [];
+    for (let page = 1; page <= 6; page++) {
+      await p.goto('https://console.foodics.com/reports/inventory-levels?page=' + page, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      if (/login|auth|signin/i.test(p.url())) { S.needLogin = true; throw new Error('needLogin'); }
+      await p.waitForSelector('table tbody tr', { timeout: 30000 }).catch(() => {});
+      await p.waitForTimeout(800);
+      const rows = await p.evaluate(() => [...document.querySelectorAll('table tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => td.innerText.trim())));
+      for (const r of rows) if (r.length >= 5 && r[0]) items.push([r[0], r[1] || '', r[3] || '', parseFloat(String(r[4]).replace(/,/g, '')) || 0]);   // [اسم، كود، وحدة، كمية]
+      if (rows.length < 50) break;
+    }
+    if (!items.length) throw new Error('stock-empty');
+    return items;
+  }
+  async function runStock(force) {
+    if (!force && Date.now() - stockAt < STOCK_EVERY) return;
+    if (viewing()) return;
+    const items = await KEEP.withPage('console', async p => { try { return await pullStock(p); } finally { await p.goto('https://console.foodics.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {}); } });
+    stockAt = Date.now();
+    const doc = { at: new Date().toISOString(), src: 'foodics-inventory-levels', items };
+    const sig = JSON.stringify(items);
+    if (sig !== stockSig && gas) { await gas({ op: 'set', path: 'live/stock', data: doc }); stockSig = sig; } else if (d.mirror) d.mirror('live/stock', doc);
+    S.stockAt = doc.at; S.stockN = items.length;
+  }
+
   async function run(force) {
     if (S.busy) return; const ctx = getCtx(); if (!ctx || !gas || !KEEP) return; S.busy = true;
     try {
       const con = await KEEP.withPage('console', p => pullConsole(p));   // من تبويب الكونسول الدائم، بلا تبويبات طارئة
       try { await runOrders(); S.ordErr = null; } catch (e) { S.ordErr = String(e.message || e).slice(0, 80); }
+      try { await runStock(force); S.stockErr = null; } catch (e) { S.stockErr = String(e.message || e).slice(0, 80); }
       const cur = S.last || await gas({ op: 'get', paths: ['live/foodics'] }).then(r => { const x = r.docs && r.docs['live/foodics']; return x && x.data || null; }).catch(() => null);
       const old = cur && cur.con || null;
       let acc = cur && cur.acc || null;
@@ -145,6 +173,6 @@ module.exports = function foodicsLive(d) {
     start() { setTimeout(() => run(true), 20e3); setInterval(() => run(false), EVERY); },
     kick() { clearTimeout(tm); tm = setTimeout(() => run(false), 5e3); },   // ويب هوك تغيّر المنيو (حين يُربط تطبيق فودكس)
     run, diff,
-    status() { return { paused: S.paused || null, ordN: S.ordN || 0, ordAt: S.ordAt || null, ordErr: S.ordErr || null, at: S.at, wrote: S.wrote, n: S.n, err: S.err, accErr: S.accErr, needLogin: S.needLogin, every: EVERY / 1000 }; },
+    status() { return { paused: S.paused || null, ordN: S.ordN || 0, ordAt: S.ordAt || null, stockAt: S.stockAt || null, stockN: S.stockN || 0, stockErr: S.stockErr || null, ordErr: S.ordErr || null, at: S.at, wrote: S.wrote, n: S.n, err: S.err, accErr: S.accErr, needLogin: S.needLogin, every: EVERY / 1000 }; },
   };
 };

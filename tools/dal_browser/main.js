@@ -38,7 +38,7 @@ async function gas(o) {
    فلا يُقبل إلا ما خرج من هنا فعلًا. LIVE_URL=off يوقفها. لا تنتظر ولا تُعطّل الكتابة الأصلية إن فشلت. */
 const LIVE_URL = E.LIVE_URL || 'https://europe-west1-dal-chat-sa.cloudfunctions.net/liveIngest';
 const MIRROR = { at: null, err: null, n: 0 };
-const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report', 'live/health', 'live/salla'];   // لا نصوص صفحات خام (web_now)
+const MIRROR_PATHS = ['live/sales_fx', 'live/sales_now', 'live/foodics', 'live/bonat_now', 'live/hesab_report', 'live/health', 'live/salla', 'live/stock'];   // لا نصوص صفحات خام (web_now)
 const MIRROR_SENT = new Map();   // nonce → { hash, at } لآخر الدفعات (تُنسى بعد 10 دقائق)
 function mirrorLive(path, data) {
   if (LIVE_URL === 'off' || !MIRROR_PATHS.includes(path)) return;
