@@ -1,1 +1,9 @@
 __pycache__/
+
+# إعدادات Claude المحلية — يُرفع فقط الإعداد المشترك والخطّافات
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+
+# خريطة Graphify — تُبنى في كل جلسة ولا تُرفع
+graphify-out/
